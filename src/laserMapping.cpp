@@ -470,6 +470,9 @@ void map_incremental()
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
+PointCloudXYZI::Ptr pcl_ikdtree(new PointCloudXYZI());
+PointCloudXYZI::Ptr pcl_scan_world(new PointCloudXYZI());
+PointCloudXYZI::Ptr pcl_scan_body(new PointCloudXYZI());
 void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
 {
     if(scan_pub_en)
@@ -636,6 +639,10 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     laserCloudOri->clear(); 
     corr_normvect->clear(); 
     total_residual = 0.0; 
+    if(pcl_scan_world->size() > 0)pcl_scan_world->clear();
+    pcl_scan_world->resize(feats_down_size);
+    if(pcl_scan_body->size() > 0)pcl_scan_body->clear();
+    pcl_scan_body->resize(feats_down_size);
 
     /** closest surface search and residual computation **/
     #ifdef MP_EN
@@ -654,6 +661,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         point_world.y = p_global(1);
         point_world.z = p_global(2);
         point_world.intensity = point_body.intensity;
+        pcl_scan_body->points[i] = point_body;
+        pcl_scan_world->points[i] = point_world;
 
         vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
 
@@ -1021,6 +1030,39 @@ int main(int argc, char** argv)
         pcl::PCDWriter pcd_writer;
         cout << "current scan saved to /PCD/" << file_name<<endl;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+    }
+    if(pcl_scan_body->size() > 0)
+    {
+        string file_name = string("scan_body.pcd");
+        string full_path(string(string(ROOT_DIR) + "PCD/") + file_name);
+        pcl::PCDWriter pcd_writer;
+        cout << "pcl_scan_body saved to: " << full_path << endl;
+        pcd_writer.writeBinary(full_path, *pcl_scan_body);
+    }
+    if(pcl_scan_world->size() > 0)
+    {
+        string file_name = string("scan_world.pcd");
+        string full_path(string(string(ROOT_DIR) + "PCD/") + file_name);
+        pcl::PCDWriter pcd_writer;
+        cout << "pcl_scan_world saved to: " << full_path << endl;
+        pcd_writer.writeBinary(full_path, *pcl_scan_world);
+    }
+    PointVector points_ikdtree;
+    if(ikdtree.Root_Node != NULL){
+        ikdtree.flatten(ikdtree.Root_Node, points_ikdtree, NOT_RECORD);
+    }
+    if(pcl_ikdtree->size() > 0)pcl_ikdtree->clear();
+    for (int i = 0; i < points_ikdtree.size(); i++)
+    {
+        pcl_ikdtree->push_back(points_ikdtree[i]);
+    }
+    if(pcl_ikdtree->size() > 0)
+    {
+        string file_name = string("map.pcd");
+        string full_path(string(string(ROOT_DIR) + "PCD/") + file_name);
+        pcl::PCDWriter pcd_writer;
+        cout << "pcl_ikdtree saved to: " << full_path << endl;
+        pcd_writer.writeBinary(full_path, *pcl_ikdtree);
     }
 
     fout_out.close();
