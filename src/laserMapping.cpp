@@ -79,6 +79,7 @@ const float MOV_THRESHOLD = 1.5f;
 double time_diff_lidar_to_imu = 0.0;
 
 mutex mtx_buffer;
+mutex mtx_imu_prop;
 condition_variable sig_buffer;
 
 string root_dir = ROOT_DIR;
@@ -94,6 +95,7 @@ int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudVal
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
+bool   imu_unit_g = false;
 int lidar_type;
 
 vector<vector<int>>  pointSearchInd_surf; 
@@ -134,11 +136,71 @@ vect3 pos_lid;
 
 nav_msgs::Path path;
 nav_msgs::Odometry odomAftMapped;
+nav_msgs::Odometry imuPropOdom;
 geometry_msgs::Quaternion geoQuat;
 geometry_msgs::PoseStamped msg_body_pose;
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
+
+// Optional high-rate odometry propagation using IMU updates.
+// Motivation: LiDAR odometry output is tied to LiDAR frame rate (e.g., ~10 Hz on MID360),
+// while UAV control often needs higher-rate odometry.
+// Reference: FAST_LIO issue #394.
+bool imu_prop_enable = false;
+string imu_prop_topic = "/imu_propagate";
+ros::Publisher pubImuPropOdom;
+state_ikfom imu_prop_state;
+state_ikfom latest_ekf_state;
+double latest_ekf_time = 0.0;
+double last_prop_t_from_ekf = 0.0;
+bool state_update_flg = false;
+bool imu_prop_state_valid = false;
+deque<sensor_msgs::Imu> prop_imu_buffer;
+
+inline bool is_valid_prop_dt(const double dt)
+{
+    return std::isfinite(dt) && dt > 0.0 && dt < 0.1;
+}
+
+void prop_imu_once(state_ikfom &prop_state, const double dt, const V3D &acc_raw, const V3D &gyro_raw)
+{
+    // Keep propagation close to FAST-LIO IMU preintegration: normalize acceleration magnitude
+    // using the estimated gravity norm, then remove estimated biases.
+    const V3D grav(VEC_FROM_ARRAY(prop_state.grav));
+    const double grav_norm = grav.norm();
+    if (grav_norm < 1e-6) return;
+
+    V3D acc = acc_raw * G_m_s2 / grav_norm - prop_state.ba;
+    V3D gyro = gyro_raw - prop_state.bg;
+    prop_state.rot = prop_state.rot * Exp(gyro, dt);
+
+    V3D acc_world = prop_state.rot * acc + grav;
+    prop_state.pos = prop_state.pos + prop_state.vel * dt + 0.5 * acc_world * dt * dt;
+    prop_state.vel = prop_state.vel + acc_world * dt;
+    // debug: publish acc to odometry topic
+    // imuPropOdom.pose.covariance[0] = acc_world[0];
+    // imuPropOdom.pose.covariance[1] = acc_world[1];
+    // imuPropOdom.pose.covariance[2] = acc_world[2];
+}
+
+void publish_imu_propagate_odometry(const sensor_msgs::Imu &imu_msg)
+{
+    imuPropOdom.header.frame_id = "camera_init";
+    imuPropOdom.child_frame_id = "body";
+    imuPropOdom.header.stamp = imu_msg.header.stamp;
+    imuPropOdom.pose.pose.position.x = imu_prop_state.pos(0);
+    imuPropOdom.pose.pose.position.y = imu_prop_state.pos(1);
+    imuPropOdom.pose.pose.position.z = imu_prop_state.pos(2);
+    imuPropOdom.pose.pose.orientation.x = imu_prop_state.rot.coeffs()[0];
+    imuPropOdom.pose.pose.orientation.y = imu_prop_state.rot.coeffs()[1];
+    imuPropOdom.pose.pose.orientation.z = imu_prop_state.rot.coeffs()[2];
+    imuPropOdom.pose.pose.orientation.w = imu_prop_state.rot.coeffs()[3];
+    imuPropOdom.twist.twist.linear.x = imu_prop_state.vel(0);
+    imuPropOdom.twist.twist.linear.y = imu_prop_state.vel(1);
+    imuPropOdom.twist.twist.linear.z = imu_prop_state.vel(2);
+    pubImuPropOdom.publish(imuPropOdom);
+}
 
 void SigHandle(int sig)
 {
@@ -358,7 +420,66 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
 
     last_timestamp_imu = timestamp;
 
+    if (imu_unit_g)
+    {
+        msg->linear_acceleration.x *= G_m_s2;
+        msg->linear_acceleration.y *= G_m_s2;
+        msg->linear_acceleration.z *= G_m_s2;
+    }
+
     imu_buffer.push_back(msg);
+
+    // Optional high-rate odometry by propagating the latest EKF state at IMU update rate.
+    if (imu_prop_enable)
+    {
+        lock_guard<mutex> lk_imu_prop(mtx_imu_prop);
+        prop_imu_buffer.push_back(*msg);
+        if (imu_prop_state_valid)
+        {
+            if (state_update_flg)
+            {
+                imu_prop_state = latest_ekf_state;
+                while ((!prop_imu_buffer.empty()) &&
+                       (prop_imu_buffer.front().header.stamp.toSec() < latest_ekf_time))
+                {
+                    prop_imu_buffer.pop_front();
+                }
+                last_prop_t_from_ekf = 0.0;
+                for (size_t i = 0; i < prop_imu_buffer.size(); ++i)
+                {
+                    const double t_from_ekf = prop_imu_buffer[i].header.stamp.toSec() - latest_ekf_time;
+                    const double dt = t_from_ekf - last_prop_t_from_ekf;
+                    if (!is_valid_prop_dt(dt))
+                    {
+                        continue;
+                    }
+                    V3D acc(prop_imu_buffer[i].linear_acceleration.x,
+                            prop_imu_buffer[i].linear_acceleration.y,
+                            prop_imu_buffer[i].linear_acceleration.z);
+                    V3D gyro(prop_imu_buffer[i].angular_velocity.x,
+                             prop_imu_buffer[i].angular_velocity.y,
+                             prop_imu_buffer[i].angular_velocity.z);
+                    prop_imu_once(imu_prop_state, dt, acc, gyro);
+                    last_prop_t_from_ekf = t_from_ekf;
+                }
+                state_update_flg = false;
+            }
+            else
+            {
+                const double t_from_ekf = msg->header.stamp.toSec() - latest_ekf_time;
+                const double dt = t_from_ekf - last_prop_t_from_ekf;
+                if (is_valid_prop_dt(dt))
+                {
+                    V3D acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+                    V3D gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+                    prop_imu_once(imu_prop_state, dt, acc, gyro);
+                    last_prop_t_from_ekf = t_from_ekf;
+                }
+            }
+            publish_imu_propagate_odometry(*msg);
+        }
+    }
+
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
@@ -592,7 +713,11 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
+    odomAftMapped.twist.twist.linear.x = state_point.vel(0);
+    odomAftMapped.twist.twist.linear.y = state_point.vel(1);
+    odomAftMapped.twist.twist.linear.z = state_point.vel(2);
     pubOdomAftMapped.publish(odomAftMapped);
+    pubImuPropOdom.publish(odomAftMapped);
     auto P = kf.get_P();
     for (int i = 0; i < 6; i ++)
     {
@@ -783,6 +908,7 @@ int main(int argc, char** argv)
     nh.param<int>("preprocess/scan_line", p_pre->N_SCANS, 16);
     nh.param<int>("preprocess/timestamp_unit", p_pre->time_unit, US);
     nh.param<int>("preprocess/scan_rate", p_pre->SCAN_RATE, 10);
+    nh.param<bool>("preprocess/imu_unit_g", imu_unit_g, false);
     nh.param<int>("point_filter_num", p_pre->point_filter_num, 2);
     nh.param<bool>("feature_extract_enable", p_pre->feature_enabled, false);
     nh.param<bool>("runtime_pos_log_enable", runtime_pos_log, 0);
@@ -791,6 +917,8 @@ int main(int argc, char** argv)
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
+    nh.param<bool>("imu_propagate/enable", imu_prop_enable, false);
+    nh.param<string>("imu_propagate/topic", imu_prop_topic, "/imu_propagate");
 
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
@@ -856,6 +984,7 @@ int main(int argc, char** argv)
             ("/Laser_map", 100000);
     ros::Publisher pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> 
             ("/Odometry", 100000);
+    pubImuPropOdom = nh.advertise<nav_msgs::Odometry>(imu_prop_topic, 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
 //------------------------------------------------------------------------------------------------------
@@ -887,6 +1016,15 @@ int main(int argc, char** argv)
 
             p_imu->Process(Measures, kf, feats_undistort);
             state_point = kf.get_x();
+            if (imu_prop_enable)
+            {
+                lock_guard<mutex> lk_imu_prop(mtx_imu_prop);
+                // Hand off the latest fused state as propagation anchor for subsequent IMU callbacks.
+                latest_ekf_state = state_point;
+                latest_ekf_time = lidar_end_time;
+                state_update_flg = true;
+                imu_prop_state_valid = true;
+            }
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
 
             if (feats_undistort->empty() || (feats_undistort == NULL))
