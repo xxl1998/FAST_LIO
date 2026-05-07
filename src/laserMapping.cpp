@@ -140,6 +140,11 @@ nav_msgs::Odometry imuPropOdom;
 geometry_msgs::Quaternion geoQuat;
 geometry_msgs::PoseStamped msg_body_pose;
 
+// Transform from original FAST-LIO world frame (I0) to gravity-aligned frame (G).
+// It is initialized once per process lifecycle from the main IMU gravity estimate.
+Matrix4d G_T_I0(Matrix4d::Identity());
+bool gravity_align_initialized = false;
+
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
@@ -161,6 +166,57 @@ deque<sensor_msgs::Imu> prop_imu_buffer;
 inline bool is_valid_prop_dt(const double dt)
 {
     return std::isfinite(dt) && dt > 0.0 && dt < 0.1;
+}
+
+inline bool try_init_gravity_aligned_transform(const state_ikfom &s)
+{
+    const V3D gz(s.grav[0], s.grav[1], s.grav[2]);
+    const double gz_norm = gz.norm();
+    if (gz_norm < 1e-6) return false;
+    const V3D ez(0.0, 0.0, -1.0);
+    // Keep yaw unchanged in the original frame, align roll/pitch to gravity.
+    V3D euler_g_from_i0 = RotMtoEuler(Quaterniond::FromTwoVectors(gz, ez).toRotationMatrix());
+    euler_g_from_i0.z() = 0.0;
+
+    const M3D R_G_I0 = EulerToRotM(euler_g_from_i0);
+    G_T_I0.setIdentity();
+    G_T_I0.block<3, 3>(0, 0) = R_G_I0;
+
+    const Quaterniond q_g_i0(R_G_I0);
+    const V3D gravity_dir = gz / gz_norm;
+    const V3D gravity_rpy_deg = euler_g_from_i0 * 57.29577951308232;
+    const V3D gravity_vec_rpy_deg = RotMtoEuler(Quaterniond::FromTwoVectors(gravity_dir, ez).toRotationMatrix()) * 57.29577951308232;
+
+    ROS_INFO_STREAM(
+        "\n[FAST-LIO] Gravity-aligned frame initialization: DONE\n"
+        "  frame transform name: G_T_I0 (I0 -> G)\n"
+        "  init time (s from first lidar): " << (Measures.lidar_beg_time - first_lidar_time) << "\n"
+        "  gravity vector in I0: [" << gz(0) << ", " << gz(1) << ", " << gz(2) << "]\n"
+        "  gravity norm: " << gz_norm << "\n"
+        "  gravity unit direction in I0: [" << gravity_dir(0) << ", " << gravity_dir(1) << ", " << gravity_dir(2) << "]\n"
+        "  gravity-direction alignment Euler (deg, xyz): [" << gravity_vec_rpy_deg(0) << ", " << gravity_vec_rpy_deg(1) << ", " << gravity_vec_rpy_deg(2) << "]\n"
+        "  G_T_I0 rotation Euler (rad, xyz): [" << euler_g_from_i0(0) << ", " << euler_g_from_i0(1) << ", " << euler_g_from_i0(2) << "]\n"
+        "  G_T_I0 rotation Euler (deg, xyz): [" << gravity_rpy_deg(0) << ", " << gravity_rpy_deg(1) << ", " << gravity_rpy_deg(2) << "]\n"
+        "  G_T_I0 quaternion [w, x, y, z]: [" << q_g_i0.w() << ", " << q_g_i0.x() << ", " << q_g_i0.y() << ", " << q_g_i0.z() << "]\n"
+        "  G_T_I0 rotation matrix:\n"
+        "    [" << R_G_I0(0,0) << ", " << R_G_I0(0,1) << ", " << R_G_I0(0,2) << "]\n"
+        "    [" << R_G_I0(1,0) << ", " << R_G_I0(1,1) << ", " << R_G_I0(1,2) << "]\n"
+        "    [" << R_G_I0(2,0) << ", " << R_G_I0(2,1) << ", " << R_G_I0(2,2) << "]\n"
+        "  G_T_I0 translation: [" << G_T_I0(0,3) << ", " << G_T_I0(1,3) << ", " << G_T_I0(2,3) << "]\n");
+    return true;
+}
+
+inline void ConvertPoseToGravFrame(V3D &pos, Quaterniond &q)
+{
+    M3D rot = q.toRotationMatrix();
+    pos = G_T_I0.block<3, 3>(0, 0) * pos + G_T_I0.col(3).head(3);
+    rot = G_T_I0.block<3, 3>(0, 0) * rot;
+    q = Quaterniond(rot);
+}
+
+inline void ConvertTwistToGravFrame(V3D &vel)
+{
+    vel = G_T_I0.block<3, 3>(0, 0) * vel;
 }
 
 void prop_imu_once(state_ikfom &prop_state, const double dt, const V3D &acc_raw, const V3D &gyro_raw)
@@ -189,16 +245,21 @@ void publish_imu_propagate_odometry(const sensor_msgs::Imu &imu_msg)
     imuPropOdom.header.frame_id = "camera_init";
     imuPropOdom.child_frame_id = "body";
     imuPropOdom.header.stamp = imu_msg.header.stamp;
-    imuPropOdom.pose.pose.position.x = imu_prop_state.pos(0);
-    imuPropOdom.pose.pose.position.y = imu_prop_state.pos(1);
-    imuPropOdom.pose.pose.position.z = imu_prop_state.pos(2);
-    imuPropOdom.pose.pose.orientation.x = imu_prop_state.rot.coeffs()[0];
-    imuPropOdom.pose.pose.orientation.y = imu_prop_state.rot.coeffs()[1];
-    imuPropOdom.pose.pose.orientation.z = imu_prop_state.rot.coeffs()[2];
-    imuPropOdom.pose.pose.orientation.w = imu_prop_state.rot.coeffs()[3];
-    imuPropOdom.twist.twist.linear.x = imu_prop_state.vel(0);
-    imuPropOdom.twist.twist.linear.y = imu_prop_state.vel(1);
-    imuPropOdom.twist.twist.linear.z = imu_prop_state.vel(2);
+    V3D pos = imu_prop_state.pos;
+    Quaterniond q(imu_prop_state.rot);
+    V3D vel = imu_prop_state.vel;
+    ConvertPoseToGravFrame(pos, q);
+    ConvertTwistToGravFrame(vel);
+    imuPropOdom.pose.pose.position.x = pos(0);
+    imuPropOdom.pose.pose.position.y = pos(1);
+    imuPropOdom.pose.pose.position.z = pos(2);
+    imuPropOdom.pose.pose.orientation.x = q.x();
+    imuPropOdom.pose.pose.orientation.y = q.y();
+    imuPropOdom.pose.pose.orientation.z = q.z();
+    imuPropOdom.pose.pose.orientation.w = q.w();
+    imuPropOdom.twist.twist.linear.x = vel(0);
+    imuPropOdom.twist.twist.linear.y = vel(1);
+    imuPropOdom.twist.twist.linear.z = vel(2);
     pubImuPropOdom.publish(imuPropOdom);
 }
 
@@ -609,6 +670,13 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
         {
             RGBpointBodyToWorld(&laserCloudFullRes->points[i], \
                                 &laserCloudWorld->points[i]);
+            const V3D p_grav = G_T_I0.block<3, 3>(0, 0) * V3D(laserCloudWorld->points[i].x,
+                                                              laserCloudWorld->points[i].y,
+                                                              laserCloudWorld->points[i].z)
+                               + G_T_I0.col(3).head(3);
+            laserCloudWorld->points[i].x = p_grav(0);
+            laserCloudWorld->points[i].y = p_grav(1);
+            laserCloudWorld->points[i].z = p_grav(2);
         }
 
         sensor_msgs::PointCloud2 laserCloudmsg;
@@ -632,6 +700,13 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
         {
             RGBpointBodyToWorld(&feats_undistort->points[i], \
                                 &laserCloudWorld->points[i]);
+            const V3D p_grav = G_T_I0.block<3, 3>(0, 0) * V3D(laserCloudWorld->points[i].x,
+                                                              laserCloudWorld->points[i].y,
+                                                              laserCloudWorld->points[i].z)
+                               + G_T_I0.col(3).head(3);
+            laserCloudWorld->points[i].x = p_grav(0);
+            laserCloudWorld->points[i].y = p_grav(1);
+            laserCloudWorld->points[i].z = p_grav(2);
         }
         *pcl_wait_save += *laserCloudWorld;
 
@@ -677,6 +752,13 @@ void publish_effect_world(const ros::Publisher & pubLaserCloudEffect)
     {
         RGBpointBodyToWorld(&laserCloudOri->points[i], \
                             &laserCloudWorld->points[i]);
+        const V3D p_grav = G_T_I0.block<3, 3>(0, 0) * V3D(laserCloudWorld->points[i].x,
+                                                          laserCloudWorld->points[i].y,
+                                                          laserCloudWorld->points[i].z)
+                           + G_T_I0.col(3).head(3);
+        laserCloudWorld->points[i].x = p_grav(0);
+        laserCloudWorld->points[i].y = p_grav(1);
+        laserCloudWorld->points[i].z = p_grav(2);
     }
     sensor_msgs::PointCloud2 laserCloudFullRes3;
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
@@ -687,8 +769,19 @@ void publish_effect_world(const ros::Publisher & pubLaserCloudEffect)
 
 void publish_map(const ros::Publisher & pubLaserCloudMap)
 {
+    PointCloudXYZI::Ptr map_grav(new PointCloudXYZI(featsFromMap->size(), 1));
+    for (size_t i = 0; i < featsFromMap->size(); ++i)
+    {
+        const auto &p = featsFromMap->points[i];
+        const V3D p_grav = G_T_I0.block<3, 3>(0, 0) * V3D(p.x, p.y, p.z) + G_T_I0.col(3).head(3);
+        auto &out = map_grav->points[i];
+        out = p;
+        out.x = p_grav(0);
+        out.y = p_grav(1);
+        out.z = p_grav(2);
+    }
     sensor_msgs::PointCloud2 laserCloudMap;
-    pcl::toROSMsg(*featsFromMap, laserCloudMap);
+    pcl::toROSMsg(*map_grav, laserCloudMap);
     laserCloudMap.header.stamp = ros::Time().fromSec(lidar_end_time);
     laserCloudMap.header.frame_id = "camera_init";
     pubLaserCloudMap.publish(laserCloudMap);
@@ -697,13 +790,16 @@ void publish_map(const ros::Publisher & pubLaserCloudMap)
 template<typename T>
 void set_posestamp(T & out)
 {
-    out.pose.position.x = state_point.pos(0);
-    out.pose.position.y = state_point.pos(1);
-    out.pose.position.z = state_point.pos(2);
-    out.pose.orientation.x = geoQuat.x;
-    out.pose.orientation.y = geoQuat.y;
-    out.pose.orientation.z = geoQuat.z;
-    out.pose.orientation.w = geoQuat.w;
+    Quaterniond q(geoQuat.w, geoQuat.x, geoQuat.y, geoQuat.z);
+    V3D pos = state_point.pos;
+    ConvertPoseToGravFrame(pos, q);
+    out.pose.position.x = pos(0);
+    out.pose.position.y = pos(1);
+    out.pose.position.z = pos(2);
+    out.pose.orientation.x = q.x();
+    out.pose.orientation.y = q.y();
+    out.pose.orientation.z = q.z();
+    out.pose.orientation.w = q.w();
     
 }
 
@@ -713,9 +809,11 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
-    odomAftMapped.twist.twist.linear.x = state_point.vel(0);
-    odomAftMapped.twist.twist.linear.y = state_point.vel(1);
-    odomAftMapped.twist.twist.linear.z = state_point.vel(2);
+    V3D vel = state_point.vel;
+    ConvertTwistToGravFrame(vel);
+    odomAftMapped.twist.twist.linear.x = vel(0);
+    odomAftMapped.twist.twist.linear.y = vel(1);
+    odomAftMapped.twist.twist.linear.z = vel(2);
     pubOdomAftMapped.publish(odomAftMapped);
     pubImuPropOdom.publish(odomAftMapped);
     auto P = kf.get_P();
@@ -1035,6 +1133,10 @@ int main(int argc, char** argv)
 
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
+            if (flg_EKF_inited && !gravity_align_initialized)
+            {
+                gravity_align_initialized = try_init_gravity_aligned_transform(state_point);
+            }
             /*** Segment the map in lidar FOV ***/
             lasermap_fov_segment();
 
