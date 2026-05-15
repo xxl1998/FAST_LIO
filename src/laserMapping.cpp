@@ -153,6 +153,7 @@ shared_ptr<ImuProcess> p_imu(new ImuProcess());
 // while UAV control often needs higher-rate odometry.
 // Reference: FAST_LIO issue #394.
 bool imu_prop_enable = false;
+bool imu_prop_use_imu_attitude = true;
 string imu_prop_topic = "/imu_propagate";
 ros::Publisher pubImuPropOdom;
 state_ikfom imu_prop_state;
@@ -494,12 +495,36 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     if (imu_prop_enable)
     {
         lock_guard<mutex> lk_imu_prop(mtx_imu_prop);
+        if (imu_prop_use_imu_attitude)
+        {
+            Eigen::Quaterniond imu_q(msg->orientation.w,
+                                     msg->orientation.x,
+                                     msg->orientation.y,
+                                     msg->orientation.z);
+            if (imu_q.norm() > 1e-12)
+            {
+                imu_q.normalize();
+                imu_prop_state.rot = SO3(imu_q.toRotationMatrix());
+            }
+        }
         prop_imu_buffer.push_back(*msg);
         if (imu_prop_state_valid)
         {
             if (state_update_flg)
             {
                 imu_prop_state = latest_ekf_state;
+                if (imu_prop_use_imu_attitude)
+                {
+                    Eigen::Quaterniond imu_q(msg->orientation.w,
+                                             msg->orientation.x,
+                                             msg->orientation.y,
+                                             msg->orientation.z);
+                    if (imu_q.norm() > 1e-12)
+                    {
+                        imu_q.normalize();
+                        imu_prop_state.rot = SO3(imu_q.toRotationMatrix());
+                    }
+                }
                 while ((!prop_imu_buffer.empty()) &&
                        (prop_imu_buffer.front().header.stamp.toSec() < latest_ekf_time))
                 {
@@ -1016,6 +1041,7 @@ int main(int argc, char** argv)
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
     nh.param<bool>("imu_propagate/enable", imu_prop_enable, false);
+    nh.param<bool>("imu_propagate/use_imu_attitude", imu_prop_use_imu_attitude, true);
     nh.param<string>("imu_propagate/topic", imu_prop_topic, "/imu_propagate");
 
     p_pre->lidar_type = lidar_type;
