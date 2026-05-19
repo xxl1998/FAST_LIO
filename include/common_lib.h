@@ -5,10 +5,7 @@
 #include <Eigen/Eigen>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
-#include <fast_lio/Pose6D.h>
 #include <sensor_msgs/Imu.h>
-#include <nav_msgs/Odometry.h>
-#include <tf/transform_broadcaster.h>
 #include <eigen_conversions/eigen_msg.h>
 
 using namespace std;
@@ -33,7 +30,6 @@ using namespace Eigen;
 #define STD_VEC_FROM_EIGEN(mat)  vector<decltype(mat)::Scalar> (mat.data(), mat.data() + mat.rows() * mat.cols())
 #define DEBUG_FILE_DIR(name)     (string(string(ROOT_DIR) + "Log/"+ name))
 
-typedef fast_lio::Pose6D Pose6D;
 typedef pcl::PointXYZINormal PointType;
 typedef pcl::PointCloud<PointType> PointCloudXYZI;
 typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
@@ -41,6 +37,23 @@ typedef Vector3d V3D;
 typedef Matrix3d M3D;
 typedef Vector3f V3F;
 typedef Matrix3f M3F;
+
+// the preintegrated Lidar states at the time of IMU measurements in a frame
+struct Pose6D
+{
+    // the offset time of IMU measurement w.r.t the first lidar point
+    double offset_time = 0.0;
+    // the preintegrated total acceleration (global frame) at the Lidar origin
+    double acc[3] = {0.0, 0.0, 0.0};
+    // the unbiased angular velocity (body frame) at the Lidar origin
+    double gyr[3] = {0.0, 0.0, 0.0};
+    // the preintegrated velocity (global frame) at the Lidar origin
+    double vel[3] = {0.0, 0.0, 0.0};
+    // the preintegrated position (global frame) at the Lidar origin
+    double pos[3] = {0.0, 0.0, 0.0};
+    // the preintegrated rotation (global frame) at the Lidar origin
+    double rot[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+};
 
 #define MD(a,b)  Matrix<double, (a), (b)>
 #define VD(a)    Matrix<double, (a), 1>

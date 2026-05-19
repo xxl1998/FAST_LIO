@@ -1,8 +1,5 @@
 #include "preprocess.h"
 
-#define RETURN0     0x00
-#define RETURN0AND1 0x10
-
 Preprocess::Preprocess()
   :feature_enabled(0), lidar_type(AVIA), blind(0.01), point_filter_num(1)
 {

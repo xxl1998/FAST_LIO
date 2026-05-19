@@ -69,6 +69,7 @@ class ImuProcess
   PointCloudXYZI::Ptr cur_pcl_un_;
   sensor_msgs::ImuConstPtr last_imu_;
   deque<sensor_msgs::ImuConstPtr> v_imu_;
+  // Preintegrated IMU poses represented by local C++ struct Pose6D (not ROS msg).
   vector<Pose6D> IMUpose;
   vector<M3D>    v_rot_pcl_;
   M3D Lidar_R_wrt_IMU;
