@@ -8,28 +8,31 @@
 
 #define MAX_INI_COUNT (10)
 
-static inline const bool time_list(PointType &x, PointType &y) {return (x.curvature < y.curvature);};
+static inline const bool time_list(PointType& x, PointType& y) {
+  return (x.curvature < y.curvature);
+};
 
 /// *************IMU Process and undistortion
-class ImuProcess
-{
+class ImuProcess {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   ImuProcess();
   ~ImuProcess();
-  
+
   void Reset();
-  void Reset(double start_timestamp, const sensor_msgs::ImuConstPtr &lastimu);
-  void set_extrinsic(const V3D &transl, const M3D &rot);
-  void set_extrinsic(const V3D &transl);
-  void set_extrinsic(const MD(4,4) &T);
-  void set_gyr_cov(const V3D &scaler);
-  void set_acc_cov(const V3D &scaler);
-  void set_gyr_bias_cov(const V3D &b_g);
-  void set_acc_bias_cov(const V3D &b_a);
+  void Reset(double start_timestamp, const sensor_msgs::ImuConstPtr& lastimu);
+  void set_extrinsic(const V3D& transl, const M3D& rot);
+  void set_extrinsic(const V3D& transl);
+  void set_extrinsic(const MD(4, 4) & T);
+  void set_gyr_cov(const V3D& scaler);
+  void set_acc_cov(const V3D& scaler);
+  void set_gyr_bias_cov(const V3D& b_g);
+  void set_acc_bias_cov(const V3D& b_a);
   Eigen::Matrix<double, 12, 12> Q;
-  void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
+  void Process(const MeasureGroup& meas,
+               esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state,
+               PointCloudXYZI::Ptr pcl_un_);
 
   ofstream fout_imu;
   V3D cov_acc;
@@ -42,15 +45,19 @@ class ImuProcess
   int lidar_type;
 
  private:
-  void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
-  void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
+  void IMU_init(const MeasureGroup& meas,
+                esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state, int& N);
+  void UndistortPcl(const MeasureGroup& meas,
+                    esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state,
+                    PointCloudXYZI& pcl_in_out);
 
   PointCloudXYZI::Ptr cur_pcl_un_;
   sensor_msgs::ImuConstPtr last_imu_;
   deque<sensor_msgs::ImuConstPtr> v_imu_;
-  // Preintegrated IMU poses represented by local C++ struct Pose6D (not ROS msg).
+  // Preintegrated IMU poses represented by local C++ struct Pose6D (not ROS
+  // msg).
   vector<Pose6D> IMUpose;
-  vector<M3D>    v_rot_pcl_;
+  vector<M3D> v_rot_pcl_;
   M3D Lidar_R_wrt_IMU;
   V3D Lidar_T_wrt_IMU;
   V3D mean_acc;
@@ -59,7 +66,7 @@ class ImuProcess
   V3D acc_s_last;
   double start_timestamp_;
   double last_lidar_end_time_;
-  int    init_iter_num = 1;
-  bool   b_first_frame_ = true;
-  bool   imu_need_init_ = true;
+  int init_iter_num = 1;
+  bool b_first_frame_ = true;
+  bool imu_need_init_ = true;
 };
