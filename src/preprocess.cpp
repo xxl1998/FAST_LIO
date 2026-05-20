@@ -36,14 +36,26 @@ void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num) {
   point_filter_num = pfilt_num;
 }
 
+#ifdef USE_ROS1
 void Preprocess::process(const livox_ros_driver::CustomMsg::ConstPtr& msg,
                          PointCloudXYZI::Ptr& pcl_out) {
+#else
+void Preprocess::process(
+    const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr& msg,
+    PointCloudXYZI::Ptr& pcl_out) {
+#endif
   avia_handler(msg);
   *pcl_out = pl_surf;
 }
 
+#ifdef USE_ROS1
 void Preprocess::process(const sensor_msgs::PointCloud2::ConstPtr& msg,
                          PointCloudXYZI::Ptr& pcl_out) {
+#else
+void Preprocess::process(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg,
+    PointCloudXYZI::Ptr& pcl_out) {
+#endif
   switch (time_unit) {
     case SEC:
       time_unit_scale = 1.e3f;
@@ -82,8 +94,13 @@ void Preprocess::process(const sensor_msgs::PointCloud2::ConstPtr& msg,
   *pcl_out = pl_surf;
 }
 
+#ifdef USE_ROS1
 void Preprocess::avia_handler(
     const livox_ros_driver::CustomMsg::ConstPtr& msg) {
+#else
+void Preprocess::avia_handler(
+    const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr& msg) {
+#endif
   pl_surf.clear();
   pl_corn.clear();
   pl_full.clear();
@@ -178,7 +195,12 @@ void Preprocess::avia_handler(
   }
 }
 
+#ifdef USE_ROS1
 void Preprocess::oust64_handler(const sensor_msgs::PointCloud2::ConstPtr& msg) {
+#else
+void Preprocess::oust64_handler(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg) {
+#endif
   pl_surf.clear();
   pl_corn.clear();
   pl_full.clear();
@@ -236,7 +258,11 @@ void Preprocess::oust64_handler(const sensor_msgs::PointCloud2::ConstPtr& msg) {
       give_feature(pl, types);
     }
   } else {
+#ifdef USE_ROS1
     double time_stamp = msg->header.stamp.toSec();
+#else
+    double time_stamp = rclcpp::Time(msg->header.stamp).seconds();
+#endif
     // cout << "===================================" << endl;
     // printf("Pt size = %d, N_SCANS = %d\r\n", plsize, N_SCANS);
     for (int i = 0; i < pl_orig.points.size(); i++) {
@@ -267,8 +293,13 @@ void Preprocess::oust64_handler(const sensor_msgs::PointCloud2::ConstPtr& msg) {
   // pub_func(pl_surf, pub_corn, msg->header.stamp);
 }
 
+#ifdef USE_ROS1
 void Preprocess::velodyne_handler(
     const sensor_msgs::PointCloud2::ConstPtr& msg) {
+#else
+void Preprocess::velodyne_handler(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg) {
+#endif
   pl_surf.clear();
   pl_corn.clear();
   pl_full.clear();
@@ -425,7 +456,12 @@ void Preprocess::velodyne_handler(
   }
 }
 
+#ifdef USE_ROS1
 void Preprocess::sim_handler(const sensor_msgs::PointCloud2::ConstPtr& msg) {
+#else
+void Preprocess::sim_handler(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg) {
+#endif
   pl_surf.clear();
   pl_full.clear();
   pcl::PointCloud<pcl::PointXYZI> pl_orig;
@@ -710,10 +746,18 @@ void Preprocess::give_feature(pcl::PointCloud<PointType>& pl,
   }
 }
 
+#ifdef USE_ROS1
 void Preprocess::pub_func(PointCloudXYZI& pl, const ros::Time& ct) {
+#else
+void Preprocess::pub_func(PointCloudXYZI& pl, const rclcpp::Time& ct) {
+#endif
   pl.height = 1;
   pl.width = pl.size();
+#ifdef USE_ROS1
   sensor_msgs::PointCloud2 output;
+#else
+  sensor_msgs::msg::PointCloud2 output;
+#endif
   pcl::toROSMsg(pl, output);
   output.header.frame_id = "livox";
   output.header.stamp = ct;

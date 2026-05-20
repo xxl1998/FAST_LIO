@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <!-- ROS2 manifest. See package_ros1.xml for ROS1/catkin variant. -->
+  <name>fast_lio</name>
+  <version>0.0.0</version>
+
+  <description>
+    FAST-LIO2
+  </description>
+
+  <maintainer email="xinlexi@connect.hku.hk">Xinle XI</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_ros</depend>
+  <depend>livox_ros_driver2</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

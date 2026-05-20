@@ -17,7 +17,11 @@ ImuProcess::ImuProcess()
   angvel_last = Zero3d;
   Lidar_T_wrt_IMU = Zero3d;
   Lidar_R_wrt_IMU = Eye3d;
+#ifdef USE_ROS1
   last_imu_.reset(new sensor_msgs::Imu());
+#else
+  last_imu_.reset(new sensor_msgs::msg::Imu());
+#endif
 }
 
 ImuProcess::~ImuProcess() {}
@@ -32,7 +36,11 @@ void ImuProcess::Reset() {
   init_iter_num = 1;
   v_imu_.clear();
   IMUpose.clear();
+#ifdef USE_ROS1
   last_imu_.reset(new sensor_msgs::Imu());
+#else
+  last_imu_.reset(new sensor_msgs::msg::Imu());
+#endif
   cur_pcl_un_.reset(new PointCloudXYZI());
 }
 
@@ -126,8 +134,13 @@ void ImuProcess::UndistortPcl(
   /*** add the imu of the last frame-tail to the of current frame-head ***/
   auto v_imu = meas.imu;
   v_imu.push_front(last_imu_);
+#ifdef USE_ROS1
   const double& imu_beg_time = v_imu.front()->header.stamp.toSec();
   const double& imu_end_time = v_imu.back()->header.stamp.toSec();
+#else
+  const double& imu_beg_time = rclcpp::Time(v_imu.front()->header.stamp).seconds();
+  const double& imu_end_time = rclcpp::Time(v_imu.back()->header.stamp).seconds();
+#endif
 
   double pcl_beg_time = meas.lidar_beg_time;
   double pcl_end_time = meas.lidar_end_time;
@@ -163,7 +176,11 @@ void ImuProcess::UndistortPcl(
     auto&& head = *(it_imu);
     auto&& tail = *(it_imu + 1);
 
+#ifdef USE_ROS1
     if (tail->header.stamp.toSec() < last_lidar_end_time_) continue;
+#else
+    if (rclcpp::Time(tail->header.stamp).seconds() < last_lidar_end_time_) continue;
+#endif
 
     angvel_avr << 0.5 * (head->angular_velocity.x + tail->angular_velocity.x),
         0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
@@ -178,12 +195,23 @@ void ImuProcess::UndistortPcl(
 
     acc_avr = acc_avr * G_m_s2 / mean_acc.norm();  // - state_inout.ba;
 
+    
+#ifdef USE_ROS1
     if (head->header.stamp.toSec() < last_lidar_end_time_) {
       dt = tail->header.stamp.toSec() - last_lidar_end_time_;
       // dt = tail->header.stamp.toSec() - pcl_beg_time;
     } else {
       dt = tail->header.stamp.toSec() - head->header.stamp.toSec();
     }
+#else
+    if (rclcpp::Time(head->header.stamp).seconds() < last_lidar_end_time_) {
+      dt = rclcpp::Time(tail->header.stamp).seconds() - last_lidar_end_time_;
+      // dt = rclcpp::Time(tail->header.stamp).seconds() - pcl_beg_time;
+    } else {
+      dt = rclcpp::Time(tail->header.stamp).seconds() -
+           rclcpp::Time(head->header.stamp).seconds();
+    }
+#endif
 
     in.acc = acc_avr;
     in.gyro = angvel_avr;
@@ -200,7 +228,11 @@ void ImuProcess::UndistortPcl(
     for (int i = 0; i < 3; i++) {
       acc_s_last[i] += imu_state.grav[i];
     }
+#ifdef USE_ROS1
     double&& offs_t = tail->header.stamp.toSec() - pcl_beg_time;
+#else
+    double&& offs_t = rclcpp::Time(tail->header.stamp).seconds() - pcl_beg_time;
+#endif
     IMUpose.push_back(set_pose6d(offs_t, acc_s_last, angvel_last, imu_state.vel,
                                  imu_state.pos,
                                  imu_state.rot.toRotationMatrix()));

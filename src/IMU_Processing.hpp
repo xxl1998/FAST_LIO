@@ -1,6 +1,12 @@
 #include <deque>
 #include <fstream>
 
+#ifdef USE_ROS1
+#include <sensor_msgs/Imu.h>
+#else
+#include <sensor_msgs/msg/imu.hpp>
+#endif
+
 #include "common_lib.h"
 #include "use-ikfom.hpp"
 
@@ -21,7 +27,12 @@ class ImuProcess {
   ~ImuProcess();
 
   void Reset();
+#ifdef USE_ROS1
   void Reset(double start_timestamp, const sensor_msgs::ImuConstPtr& lastimu);
+#else
+  void Reset(double start_timestamp,
+             const sensor_msgs::msg::Imu::ConstSharedPtr& lastimu);
+#endif
   void set_extrinsic(const V3D& transl, const M3D& rot);
   void set_extrinsic(const V3D& transl);
   void set_extrinsic(const MD(4, 4) & T);
@@ -52,8 +63,13 @@ class ImuProcess {
                     PointCloudXYZI& pcl_in_out);
 
   PointCloudXYZI::Ptr cur_pcl_un_;
+#ifdef USE_ROS1
   sensor_msgs::ImuConstPtr last_imu_;
   deque<sensor_msgs::ImuConstPtr> v_imu_;
+#else
+  sensor_msgs::msg::Imu::ConstSharedPtr last_imu_;
+  deque<sensor_msgs::msg::Imu::ConstSharedPtr> v_imu_;
+#endif
   // Preintegrated IMU poses represented by local C++ struct Pose6D (not ROS
   // msg).
   vector<Pose6D> IMUpose;

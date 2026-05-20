@@ -1,10 +1,14 @@
 #ifndef COMMON_LIB_H
 #define COMMON_LIB_H
 
-#include <eigen_conversions/eigen_msg.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#ifdef USE_ROS1
+#include <eigen_conversions/eigen_msg.h>
 #include <sensor_msgs/Imu.h>
+#else
+#include <sensor_msgs/msg/imu.hpp>
+#endif
 #include <so3_math.h>
 
 #include <Eigen/Eigen>
@@ -76,7 +80,11 @@ struct MeasureGroup  // Lidar data and imu dates for the curent process
   double lidar_beg_time;
   double lidar_end_time;
   PointCloudXYZI::Ptr lidar;
+#ifdef USE_ROS1
   deque<sensor_msgs::Imu::ConstPtr> imu;
+#else
+  deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu;
+#endif
 };
 
 struct StatesGroup {

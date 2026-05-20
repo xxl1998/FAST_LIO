@@ -41,7 +41,11 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
+#ifdef USE_ROS1
 #include <ros/ros.h>
+#else
+#include <rclcpp/rclcpp.hpp>
+#endif
 #include <so3_math.h>
 #include <unistd.h>
 
@@ -81,7 +85,11 @@ vector<BoxPointType> cub_needrm;
 vector<PointVector> Nearest_Points;
 deque<double> time_buffer;
 deque<PointCloudXYZI::Ptr> lidar_buffer;
+#ifdef USE_ROS1
 deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
+#else
+deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_buffer;
+#endif
 
 PointCloudXYZI::Ptr featsFromMap(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
@@ -132,49 +140,50 @@ bool try_init_gravity_aligned_transform(const state_ikfom& s) {
           Quaterniond::FromTwoVectors(gravity_dir, ez).toRotationMatrix()) *
       57.29577951308232;
 
-  ROS_INFO_STREAM(
-      "\n[FAST-LIO] Gravity-aligned frame initialization: DONE\n"
-      "  frame transform name: G_T_I0 (I0 -> G)\n"
-      "  init time (s from first lidar): "
-      << (Measures.lidar_beg_time - first_lidar_time)
-      << "\n"
-         "  gravity vector in I0: ["
-      << gz(0) << ", " << gz(1) << ", " << gz(2)
-      << "]\n"
-         "  gravity norm: "
-      << gz_norm
-      << "\n"
-         "  gravity unit direction in I0: ["
-      << gravity_dir(0) << ", " << gravity_dir(1) << ", " << gravity_dir(2)
-      << "]\n"
-         "  gravity-direction alignment Euler (deg, xyz): ["
-      << gravity_vec_rpy_deg(0) << ", " << gravity_vec_rpy_deg(1) << ", "
-      << gravity_vec_rpy_deg(2)
-      << "]\n"
-         "  G_T_I0 rotation Euler (rad, xyz): ["
-      << euler_g_from_i0(0) << ", " << euler_g_from_i0(1) << ", "
-      << euler_g_from_i0(2)
-      << "]\n"
-         "  G_T_I0 rotation Euler (deg, xyz): ["
-      << gravity_rpy_deg(0) << ", " << gravity_rpy_deg(1) << ", "
-      << gravity_rpy_deg(2)
-      << "]\n"
-         "  G_T_I0 quaternion [w, x, y, z]: ["
-      << q_g_i0.w() << ", " << q_g_i0.x() << ", " << q_g_i0.y() << ", "
-      << q_g_i0.z()
-      << "]\n"
-         "  G_T_I0 rotation matrix:\n"
-         "    ["
-      << R_G_I0(0, 0) << ", " << R_G_I0(0, 1) << ", " << R_G_I0(0, 2)
-      << "]\n"
-         "    ["
-      << R_G_I0(1, 0) << ", " << R_G_I0(1, 1) << ", " << R_G_I0(1, 2)
-      << "]\n"
-         "    ["
-      << R_G_I0(2, 0) << ", " << R_G_I0(2, 1) << ", " << R_G_I0(2, 2)
-      << "]\n"
-         "  G_T_I0 translation: ["
-      << G_T_I0(0, 3) << ", " << G_T_I0(1, 3) << ", " << G_T_I0(2, 3) << "]\n");
+  std::cout << "\n[FAST-LIO] Gravity-aligned frame initialization: DONE\n"
+               "  frame transform name: G_T_I0 (I0 -> G)\n"
+               "  init time (s from first lidar): "
+            << (Measures.lidar_beg_time - first_lidar_time)
+            << "\n"
+               "  gravity vector in I0: ["
+            << gz(0) << ", " << gz(1) << ", " << gz(2)
+            << "]\n"
+               "  gravity norm: "
+            << gz_norm
+            << "\n"
+               "  gravity unit direction in I0: ["
+            << gravity_dir(0) << ", " << gravity_dir(1) << ", "
+            << gravity_dir(2)
+            << "]\n"
+               "  gravity-direction alignment Euler (deg, xyz): ["
+            << gravity_vec_rpy_deg(0) << ", " << gravity_vec_rpy_deg(1) << ", "
+            << gravity_vec_rpy_deg(2)
+            << "]\n"
+               "  G_T_I0 rotation Euler (rad, xyz): ["
+            << euler_g_from_i0(0) << ", " << euler_g_from_i0(1) << ", "
+            << euler_g_from_i0(2)
+            << "]\n"
+               "  G_T_I0 rotation Euler (deg, xyz): ["
+            << gravity_rpy_deg(0) << ", " << gravity_rpy_deg(1) << ", "
+            << gravity_rpy_deg(2)
+            << "]\n"
+               "  G_T_I0 quaternion [w, x, y, z]: ["
+            << q_g_i0.w() << ", " << q_g_i0.x() << ", " << q_g_i0.y() << ", "
+            << q_g_i0.z()
+            << "]\n"
+               "  G_T_I0 rotation matrix:\n"
+               "    ["
+            << R_G_I0(0, 0) << ", " << R_G_I0(0, 1) << ", " << R_G_I0(0, 2)
+            << "]\n"
+               "    ["
+            << R_G_I0(1, 0) << ", " << R_G_I0(1, 1) << ", " << R_G_I0(1, 2)
+            << "]\n"
+               "    ["
+            << R_G_I0(2, 0) << ", " << R_G_I0(2, 1) << ", " << R_G_I0(2, 2)
+            << "]\n"
+               "  G_T_I0 translation: ["
+            << G_T_I0(0, 3) << ", " << G_T_I0(1, 3) << ", " << G_T_I0(2, 3)
+            << "]\n";
   return true;
 }
 
@@ -334,7 +343,7 @@ bool sync_packages(MeasureGroup& meas) {
     if (meas.lidar->points.size() <= 1)  // time too little
     {
       lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
-      ROS_WARN("Too few input point cloud!\n");
+      std::cerr << "Too few input point cloud!\n";
     } else if (meas.lidar->points.back().curvature / double(1000) <
                0.5 * lidar_mean_scantime) {
       lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
@@ -359,10 +368,18 @@ bool sync_packages(MeasureGroup& meas) {
   }
 
   /*** push imu data, and pop from imu buffer ***/
+#ifdef USE_ROS1
   double imu_time = imu_buffer.front()->header.stamp.toSec();
+#else
+  double imu_time = rclcpp::Time(imu_buffer.front()->header.stamp).seconds();
+#endif
   meas.imu.clear();
   while ((!imu_buffer.empty()) && (imu_time < lidar_end_time)) {
+#ifdef USE_ROS1
     imu_time = imu_buffer.front()->header.stamp.toSec();
+#else
+    imu_time = rclcpp::Time(imu_buffer.front()->header.stamp).seconds();
+#endif
     if (imu_time > lidar_end_time) break;
     meas.imu.push_back(imu_buffer.front());
     imu_buffer.pop_front();
@@ -496,7 +513,7 @@ void h_share_model(state_ikfom& s,
 
   if (effct_feat_num < 1) {
     ekfom_data.valid = false;
-    ROS_WARN("No Effective Points! \n");
+    std::cerr << "No Effective Points! \n";
     return;
   }
 
