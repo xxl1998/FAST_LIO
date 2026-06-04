@@ -17,6 +17,7 @@
 #include <tf/transform_datatypes.h>
 #include <visualization_msgs/Marker.h>
 #else
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_broadcaster.h>
 
@@ -40,6 +41,7 @@
 #include "ikd-Tree/ikd_Tree.h"
 #include "preprocess.h"
 #include "use-ikfom.hpp"
+#include "yaml_loader.hpp"
 
 #define INIT_TIME (0.1)
 #define LASER_POINT_COV (0.001)
@@ -67,6 +69,7 @@ geometry_msgs::Quaternion geoQuat;
 geometry_msgs::PoseStamped msg_body_pose;
 #else
 rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubImuPropOdom;
+std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
 
 nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
@@ -236,8 +239,10 @@ void SigHandle(int sig) {
 #ifdef USE_ROS1
 void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr& msg) {
 #else
-void standard_pcl_cbk(
-    const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg) {
+// ROS2 subscription callbacks must take ConstSharedPtr by value instead of
+// `const&`. Passing the shared_ptr by const reference reproduced a crash on the
+// first received sample during rclcpp/Fast DDS subscription dispatch.
+void standard_pcl_cbk(sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
 #endif
   mtx_buffer.lock();
   scan_count++;
@@ -274,8 +279,7 @@ double timediff_lidar_wrt_imu = 0.0;
 #ifdef USE_ROS1
 void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr& msg) {
 #else
-void livox_pcl_cbk(
-    const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr& msg) {
+void livox_pcl_cbk(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg) {
 #endif
   static bool timediff_set_flg = false;
   mtx_buffer.lock();
@@ -328,7 +332,7 @@ inline bool is_valid_prop_dt(const double dt) {
 #ifdef USE_ROS1
 void imu_cbk(const sensor_msgs::Imu::ConstPtr& msg_in) {
 #else
-void imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr& msg_in) {
+void imu_cbk(sensor_msgs::msg::Imu::ConstSharedPtr msg_in) {
 #endif
   publish_count++;
   // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
@@ -728,7 +732,21 @@ void publish_odometry(
   br.sendTransform(tf::StampedTransform(transform, odomAftMapped.header.stamp,
                                         world_frame_id, "body"));
 #else
-  // TODO: ROS2 tf publish
+  if (tf_broadcaster) {
+    geometry_msgs::msg::TransformStamped transform_stamped;
+    transform_stamped.header.stamp = odomAftMapped.header.stamp;
+    transform_stamped.header.frame_id = world_frame_id;
+    transform_stamped.child_frame_id = "body";
+    transform_stamped.transform.translation.x =
+        odomAftMapped.pose.pose.position.x;
+    transform_stamped.transform.translation.y =
+        odomAftMapped.pose.pose.position.y;
+    transform_stamped.transform.translation.z =
+        odomAftMapped.pose.pose.position.z;
+    transform_stamped.transform.rotation =
+        odomAftMapped.pose.pose.orientation;
+    tf_broadcaster->sendTransform(transform_stamped);
+  }
 #endif
 }
 
@@ -779,8 +797,158 @@ inline void dump_lio_state_to_log(FILE* fp) {
   fflush(fp);
 }
 
+struct FastlioParameters {
+  struct PublishConfig {
+    bool path_en = true;
+    bool scan_publish_en = true;
+    bool dense_publish_en = true;
+    bool scan_bodyframe_pub_en = true;
+  } publish;
+
+  struct CommonConfig {
+    std::string lid_topic = "/livox/lidar";
+    std::string imu_topic = "/livox/imu";
+    bool time_sync_en = false;
+    double time_offset_lidar_to_imu = 0.0;
+  } common;
+
+  struct PreprocessConfig {
+    double blind = 0.01;
+    int lidar_type = AVIA;
+    int scan_line = 16;
+    int timestamp_unit = US;
+    int scan_rate = 10;
+    bool imu_unit_g = false;
+    int point_filter_num = 3;
+    bool feature_extract_enable = false;
+  } preprocess;
+
+  struct MappingConfig {
+    float det_range = 300.f;
+    double fov_degree = 180.0;
+    double gyr_cov = 0.1;
+    double acc_cov = 0.1;
+    double b_gyr_cov = 0.0001;
+    double b_acc_cov = 0.0001;
+    bool extrinsic_est_en = true;
+    std::vector<double> extrinsic_T = {0.0, 0.0, 0.0};
+    std::vector<double> extrinsic_R = {1.0, 0.0, 0.0, 0.0, 1.0,
+                                       0.0, 0.0, 0.0, 1.0};
+  } mapping;
+
+  struct PcdSaveConfig {
+    bool pcd_save_en = false;
+    int interval = -1;
+  } pcd_save;
+
+  struct ImuPropagateConfig {
+    bool enable = false;
+    bool use_imu_attitude = true;
+    std::string topic = "/imu_propagate";
+  } imu_propagate;
+
+  int max_iteration = 3;
+  std::string map_file_path = "";
+  double filter_size_corner = 0.5;
+  double filter_size_surf = 0.5;
+  double filter_size_map = 0.5;
+  double cube_side_length = 1000.0;
+};
+
+class FastlioConfig {
+ public:
+  FastlioParameters param;
+
+  FastlioConfig() = default;
+  FastlioConfig(const std::string& cfg_path) {
+    yaml_loader::YamlLoader loader(cfg_path);
+
+    loader.LoadParam("publish/path_en", param.publish.path_en,
+                     param.publish.path_en);
+    loader.LoadParam("publish/scan_publish_en", param.publish.scan_publish_en,
+                     param.publish.scan_publish_en);
+    loader.LoadParam("publish/dense_publish_en", param.publish.dense_publish_en,
+                     param.publish.dense_publish_en);
+    loader.LoadParam("publish/scan_bodyframe_pub_en",
+                     param.publish.scan_bodyframe_pub_en,
+                     param.publish.scan_bodyframe_pub_en);
+
+    loader.LoadParam("max_iteration", param.max_iteration, param.max_iteration);
+    loader.LoadParam("map_file_path", param.map_file_path, param.map_file_path);
+    loader.LoadParam("filter_size_corner", param.filter_size_corner,
+                     param.filter_size_corner);
+    loader.LoadParam("filter_size_surf", param.filter_size_surf,
+                     param.filter_size_surf);
+    loader.LoadParam("filter_size_map", param.filter_size_map,
+                     param.filter_size_map);
+    loader.LoadParam("cube_side_length", param.cube_side_length,
+                     param.cube_side_length);
+    loader.LoadParam("common/lid_topic", param.common.lid_topic,
+                     param.common.lid_topic);
+    loader.LoadParam("common/imu_topic", param.common.imu_topic,
+                     param.common.imu_topic);
+    loader.LoadParam("common/time_sync_en", param.common.time_sync_en,
+                     param.common.time_sync_en);
+    loader.LoadParam("common/time_offset_lidar_to_imu",
+                     param.common.time_offset_lidar_to_imu,
+                     param.common.time_offset_lidar_to_imu);
+
+    loader.LoadParam("preprocess/blind", param.preprocess.blind,
+                     param.preprocess.blind);
+    loader.LoadParam("preprocess/lidar_type", param.preprocess.lidar_type,
+                     param.preprocess.lidar_type);
+    loader.LoadParam("preprocess/scan_line", param.preprocess.scan_line,
+                     param.preprocess.scan_line);
+    loader.LoadParam("preprocess/timestamp_unit",
+                     param.preprocess.timestamp_unit,
+                     param.preprocess.timestamp_unit);
+    loader.LoadParam("preprocess/scan_rate", param.preprocess.scan_rate,
+                     param.preprocess.scan_rate);
+    loader.LoadParam("preprocess/imu_unit_g", param.preprocess.imu_unit_g,
+                     param.preprocess.imu_unit_g);
+    loader.LoadParam("point_filter_num", param.preprocess.point_filter_num,
+                     param.preprocess.point_filter_num);
+    loader.LoadParam("feature_extract_enable",
+                     param.preprocess.feature_extract_enable,
+                     param.preprocess.feature_extract_enable);
+
+    loader.LoadParam("mapping/det_range", param.mapping.det_range,
+                     param.mapping.det_range);
+    loader.LoadParam("mapping/fov_degree", param.mapping.fov_degree,
+                     param.mapping.fov_degree);
+    loader.LoadParam("mapping/gyr_cov", param.mapping.gyr_cov,
+                     param.mapping.gyr_cov);
+    loader.LoadParam("mapping/acc_cov", param.mapping.acc_cov,
+                     param.mapping.acc_cov);
+    loader.LoadParam("mapping/b_gyr_cov", param.mapping.b_gyr_cov,
+                     param.mapping.b_gyr_cov);
+    loader.LoadParam("mapping/b_acc_cov", param.mapping.b_acc_cov,
+                     param.mapping.b_acc_cov);
+    loader.LoadParam("mapping/extrinsic_est_en", param.mapping.extrinsic_est_en,
+                     param.mapping.extrinsic_est_en);
+    loader.LoadParam("mapping/extrinsic_T", param.mapping.extrinsic_T,
+                     param.mapping.extrinsic_T);
+    loader.LoadParam("mapping/extrinsic_R", param.mapping.extrinsic_R,
+                     param.mapping.extrinsic_R);
+
+    loader.LoadParam("pcd_save/pcd_save_en", param.pcd_save.pcd_save_en,
+                     param.pcd_save.pcd_save_en);
+    loader.LoadParam("pcd_save/interval", param.pcd_save.interval,
+                     param.pcd_save.interval);
+
+    loader.LoadParam("imu_propagate/enable", param.imu_propagate.enable,
+                     param.imu_propagate.enable);
+    loader.LoadParam("imu_propagate/use_imu_attitude",
+                     param.imu_propagate.use_imu_attitude,
+                     param.imu_propagate.use_imu_attitude);
+    loader.LoadParam("imu_propagate/topic", param.imu_propagate.topic,
+                     param.imu_propagate.topic);
+  }
+};
+
 int main(int argc, char** argv) {
   std::string root_dir = ROOT_DIR;
+  std::string config_file = root_dir + "/config/marsim.yaml";
   std::vector<double> extrinT(3, 0.0);
   std::vector<double> extrinR(9, 0.0);
   double HALF_FOV_COS = 0, FOV_DEG = 0;
@@ -791,128 +959,57 @@ int main(int argc, char** argv) {
 #else
   rclcpp::init(argc, argv);
   auto nh = rclcpp::Node::make_shared("laserMapping");
+  tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
 #endif
 
 #ifdef USE_ROS1
-  nh.param<bool>("publish/path_en", path_en, true);
-  nh.param<bool>("publish/scan_publish_en", scan_pub_en, true);
-  nh.param<bool>("publish/dense_publish_en", dense_pub_en, true);
-  nh.param<bool>("publish/scan_bodyframe_pub_en", scan_body_pub_en, true);
-  nh.param<int>("max_iteration", NUM_MAX_ITERATIONS, 4);
-  nh.param<string>("map_file_path", map_file_path, "");
-  nh.param<string>("common/lid_topic", lid_topic, "/livox/lidar");
-  nh.param<string>("common/imu_topic", imu_topic, "/livox/imu");
-  nh.param<bool>("common/time_sync_en", time_sync_en, false);
-  nh.param<double>("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu,
-                   0.0);
-  nh.param<double>("filter_size_corner", filter_size_corner_min, 0.5);
-  nh.param<double>("filter_size_surf", filter_size_surf_min, 0.5);
-  nh.param<double>("filter_size_map", filter_size_map_min, 0.5);
-  nh.param<double>("cube_side_length", cube_len, 200);
-  nh.param<float>("mapping/det_range", DET_RANGE, 300.f);
-  nh.param<double>("mapping/fov_degree", fov_deg, 180);
-  nh.param<double>("mapping/gyr_cov", gyr_cov, 0.1);
-  nh.param<double>("mapping/acc_cov", acc_cov, 0.1);
-  nh.param<double>("mapping/b_gyr_cov", b_gyr_cov, 0.0001);
-  nh.param<double>("mapping/b_acc_cov", b_acc_cov, 0.0001);
-  nh.param<double>("preprocess/blind", p_pre->blind, 0.01);
-  nh.param<int>("preprocess/lidar_type", lidar_type, AVIA);
-  nh.param<int>("preprocess/scan_line", p_pre->N_SCANS, 16);
-  nh.param<int>("preprocess/timestamp_unit", p_pre->time_unit, US);
-  nh.param<int>("preprocess/scan_rate", p_pre->SCAN_RATE, 10);
-  nh.param<bool>("preprocess/imu_unit_g", imu_unit_g, false);
-  nh.param<int>("point_filter_num", p_pre->point_filter_num, 2);
-  nh.param<bool>("feature_extract_enable", p_pre->feature_enabled, false);
-  nh.param<bool>("runtime_pos_log_enable", runtime_pos_log, 0);
-  nh.param<bool>("mapping/extrinsic_est_en", extrinsic_est_en, true);
-  nh.param<bool>("pcd_save/pcd_save_en", pcd_save_en, false);
-  nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
-  nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
-  nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
-  nh.param<bool>("imu_propagate/enable", imu_prop_enable, false);
-  nh.param<bool>("imu_propagate/use_imu_attitude", imu_prop_use_imu_attitude,
-                 true);
-  nh.param<string>("imu_propagate/topic", imu_prop_topic, "/imu_propagate");
+  nh.param<string>("config_file", config_file, config_file);
+  nh.param<bool>("runtime_pos_log_enable", runtime_pos_log, false);
 #else
-  nh->declare_parameter<bool>("publish/path_en", true);
-  nh->declare_parameter<bool>("publish/scan_publish_en", true);
-  nh->declare_parameter<bool>("publish/dense_publish_en", true);
-  nh->declare_parameter<bool>("publish/scan_bodyframe_pub_en", true);
-  nh->declare_parameter<int>("max_iteration", 4);
-  nh->declare_parameter<string>("map_file_path", "");
-  nh->declare_parameter<string>("common/lid_topic", "/livox/lidar");
-  nh->declare_parameter<string>("common/imu_topic", "/livox/imu");
-  nh->declare_parameter<bool>("common/time_sync_en", false);
-  nh->declare_parameter<double>("common/time_offset_lidar_to_imu", 0.0);
-  nh->declare_parameter<double>("filter_size_corner", 0.5);
-  nh->declare_parameter<double>("filter_size_surf", 0.5);
-  nh->declare_parameter<double>("filter_size_map", 0.5);
-  nh->declare_parameter<double>("cube_side_length", 200.0);
-  nh->declare_parameter<double>("mapping/det_range", 300.0);
-  nh->declare_parameter<double>("mapping/fov_degree", 180.0);
-  nh->declare_parameter<double>("mapping/gyr_cov", 0.1);
-  nh->declare_parameter<double>("mapping/acc_cov", 0.1);
-  nh->declare_parameter<double>("mapping/b_gyr_cov", 0.0001);
-  nh->declare_parameter<double>("mapping/b_acc_cov", 0.0001);
-  nh->declare_parameter<double>("preprocess/blind", 0.01);
-  nh->declare_parameter<int>("preprocess/lidar_type", AVIA);
-  nh->declare_parameter<int>("preprocess/scan_line", 16);
-  nh->declare_parameter<int>("preprocess/timestamp_unit", US);
-  nh->declare_parameter<int>("preprocess/scan_rate", 10);
-  nh->declare_parameter<bool>("preprocess/imu_unit_g", false);
-  nh->declare_parameter<int>("point_filter_num", 2);
-  nh->declare_parameter<bool>("feature_extract_enable", false);
+  nh->declare_parameter<string>("config_file", config_file);
+  nh->get_parameter("config_file", config_file);
   nh->declare_parameter<bool>("runtime_pos_log_enable", false);
-  nh->declare_parameter<bool>("mapping/extrinsic_est_en", true);
-  nh->declare_parameter<bool>("pcd_save/pcd_save_en", false);
-  nh->declare_parameter<int>("pcd_save/interval", -1);
-  nh->declare_parameter<vector<double>>("mapping/extrinsic_T",
-                                        vector<double>());
-  nh->declare_parameter<vector<double>>("mapping/extrinsic_R",
-                                        vector<double>());
-  nh->declare_parameter<bool>("imu_propagate/enable", false);
-  nh->declare_parameter<bool>("imu_propagate/use_imu_attitude", true);
-  nh->declare_parameter<string>("imu_propagate/topic", "/imu_propagate");
-
-  nh->get_parameter("publish/path_en", path_en);
-  nh->get_parameter("publish/scan_publish_en", scan_pub_en);
-  nh->get_parameter("publish/dense_publish_en", dense_pub_en);
-  nh->get_parameter("publish/scan_bodyframe_pub_en", scan_body_pub_en);
-  nh->get_parameter("max_iteration", NUM_MAX_ITERATIONS);
-  nh->get_parameter("map_file_path", map_file_path);
-  nh->get_parameter("common/lid_topic", lid_topic);
-  nh->get_parameter("common/imu_topic", imu_topic);
-  nh->get_parameter("common/time_sync_en", time_sync_en);
-  nh->get_parameter("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu);
-  nh->get_parameter("filter_size_corner", filter_size_corner_min);
-  nh->get_parameter("filter_size_surf", filter_size_surf_min);
-  nh->get_parameter("filter_size_map", filter_size_map_min);
-  nh->get_parameter("cube_side_length", cube_len);
-  nh->get_parameter("mapping/det_range", DET_RANGE);
-  nh->get_parameter("mapping/fov_degree", fov_deg);
-  nh->get_parameter("mapping/gyr_cov", gyr_cov);
-  nh->get_parameter("mapping/acc_cov", acc_cov);
-  nh->get_parameter("mapping/b_gyr_cov", b_gyr_cov);
-  nh->get_parameter("mapping/b_acc_cov", b_acc_cov);
-  nh->get_parameter("preprocess/blind", p_pre->blind);
-  nh->get_parameter("preprocess/lidar_type", lidar_type);
-  nh->get_parameter("preprocess/scan_line", p_pre->N_SCANS);
-  nh->get_parameter("preprocess/timestamp_unit", p_pre->time_unit);
-  nh->get_parameter("preprocess/scan_rate", p_pre->SCAN_RATE);
-  nh->get_parameter("preprocess/imu_unit_g", imu_unit_g);
-  nh->get_parameter("point_filter_num", p_pre->point_filter_num);
-  nh->get_parameter("feature_extract_enable", p_pre->feature_enabled);
   nh->get_parameter("runtime_pos_log_enable", runtime_pos_log);
-  nh->get_parameter("mapping/extrinsic_est_en", extrinsic_est_en);
-  nh->get_parameter("pcd_save/pcd_save_en", pcd_save_en);
-  nh->get_parameter("pcd_save/interval", pcd_save_interval);
-  nh->get_parameter("mapping/extrinsic_T", extrinT);
-  nh->get_parameter("mapping/extrinsic_R", extrinR);
-  nh->get_parameter("imu_propagate/enable", imu_prop_enable);
-  nh->get_parameter("imu_propagate/use_imu_attitude",
-                    imu_prop_use_imu_attitude);
-  nh->get_parameter("imu_propagate/topic", imu_prop_topic);
 #endif
+
+  config_file = root_dir + "/config/" + config_file;
+  FastlioConfig config(config_file);
+  path_en = config.param.publish.path_en;
+  scan_pub_en = config.param.publish.scan_publish_en;
+  dense_pub_en = config.param.publish.dense_publish_en;
+  scan_body_pub_en = config.param.publish.scan_bodyframe_pub_en;
+  NUM_MAX_ITERATIONS = config.param.max_iteration;
+  map_file_path = config.param.map_file_path;
+  lid_topic = config.param.common.lid_topic;
+  imu_topic = config.param.common.imu_topic;
+  time_sync_en = config.param.common.time_sync_en;
+  time_diff_lidar_to_imu = config.param.common.time_offset_lidar_to_imu;
+  filter_size_corner_min = config.param.filter_size_corner;
+  filter_size_surf_min = config.param.filter_size_surf;
+  filter_size_map_min = config.param.filter_size_map;
+  cube_len = config.param.cube_side_length;
+  DET_RANGE = config.param.mapping.det_range;
+  fov_deg = config.param.mapping.fov_degree;
+  gyr_cov = config.param.mapping.gyr_cov;
+  acc_cov = config.param.mapping.acc_cov;
+  b_gyr_cov = config.param.mapping.b_gyr_cov;
+  b_acc_cov = config.param.mapping.b_acc_cov;
+  p_pre->blind = config.param.preprocess.blind;
+  lidar_type = config.param.preprocess.lidar_type;
+  p_pre->N_SCANS = config.param.preprocess.scan_line;
+  p_pre->time_unit = config.param.preprocess.timestamp_unit;
+  p_pre->SCAN_RATE = config.param.preprocess.scan_rate;
+  imu_unit_g = config.param.preprocess.imu_unit_g;
+  p_pre->point_filter_num = config.param.preprocess.point_filter_num;
+  p_pre->feature_enabled = config.param.preprocess.feature_extract_enable;
+  extrinsic_est_en = config.param.mapping.extrinsic_est_en;
+  pcd_save_en = config.param.pcd_save.pcd_save_en;
+  pcd_save_interval = config.param.pcd_save.interval;
+  extrinT = config.param.mapping.extrinsic_T;
+  extrinR = config.param.mapping.extrinsic_R;
+  imu_prop_enable = config.param.imu_propagate.enable;
+  imu_prop_use_imu_attitude = config.param.imu_propagate.use_imu_attitude;
+  imu_prop_topic = config.param.imu_propagate.topic;
 
   p_pre->lidar_type = lidar_type;
   cout << "p_pre->lidar_type " << p_pre->lidar_type << endl;

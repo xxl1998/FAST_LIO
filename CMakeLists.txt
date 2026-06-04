@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.12)
 project(fast_lio)
 
+# RelWithDebInfo
 SET(CMAKE_BUILD_TYPE "Debug")
 
 ADD_COMPILE_OPTIONS(-std=c++14 )
@@ -100,6 +101,7 @@ find_package(pcl_ros REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL 1.8 REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 message(Eigen: ${EIGEN3_INCLUDE_DIR})
 
@@ -130,7 +132,11 @@ ament_target_dependencies(fastlio_mapping
   livox_ros_driver2
 )
 
-target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
+target_link_libraries(fastlio_mapping
+  ${PCL_LIBRARIES}
+  ${PYTHON_LIBRARIES}
+  yaml-cpp
+)
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
 install(
@@ -166,6 +172,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(Eigen3 REQUIRED)
 find_package(PCL 1.8 REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 message(Eigen: ${EIGEN3_INCLUDE_DIR})
 
@@ -189,7 +196,12 @@ add_executable(fastlio_mapping
   src/IMU_Processing.cpp
   src/main.cpp
 )
-target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
+target_link_libraries(fastlio_mapping
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${PYTHON_LIBRARIES}
+  yaml-cpp
+)
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 add_dependencies(fastlio_mapping ${catkin_EXPORTED_TARGETS})
 

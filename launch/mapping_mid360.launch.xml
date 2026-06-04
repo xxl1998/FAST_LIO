@@ -3,14 +3,13 @@
 
   <arg name="rviz" default="true"/>
 
+  <!-- <node pkg="tf2_ros"
+        exec="static_transform_publisher"
+        name="link1_broadcaster"
+        args="0 0 0 0 0 0 map camera_init"/> -->
+
   <node pkg="fast_lio" exec="fastlio_mapping" name="laserMapping" output="screen">
-    <param from="$(find-pkg-share fast_lio)/config/mid360.yaml"/>
-    <param name="feature_extract_enable" value="false"/>
-    <param name="point_filter_num" value="3"/>
-    <param name="max_iteration" value="3"/>
-    <param name="filter_size_surf" value="0.5"/>
-    <param name="filter_size_map" value="0.5"/>
-    <param name="cube_side_length" value="1000.0"/>
+    <param name="config_file" value="mid360.yaml"/>
     <param name="runtime_pos_log_enable" value="false"/>
   </node>
 
@@ -19,5 +18,5 @@
         exec="rviz2"
         name="rviz"
         output="screen"
-        args="-d $(find-pkg-share fast_lio)/rviz/fastlio.rviz"/>
+        args="-d $(find-pkg-share fast_lio)/rviz/fastlio.rviz2"/>
 </launch>
