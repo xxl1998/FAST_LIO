@@ -37,7 +37,7 @@ void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num) {
 }
 
 #ifdef USE_ROS1
-void Preprocess::process(const livox_ros_driver::CustomMsg::ConstPtr& msg,
+void Preprocess::process(const livox_ros_driver2::CustomMsg::ConstPtr& msg,
                          PointCloudXYZI::Ptr& pcl_out) {
 #else
 void Preprocess::process(
@@ -96,7 +96,7 @@ void Preprocess::process(
 
 #ifdef USE_ROS1
 void Preprocess::avia_handler(
-    const livox_ros_driver::CustomMsg::ConstPtr& msg) {
+    const livox_ros_driver2::CustomMsg::ConstPtr& msg) {
 #else
 void Preprocess::avia_handler(
     const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr& msg) {

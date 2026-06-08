@@ -28,8 +28,7 @@
   <depend>sensor_msgs</depend>
   <depend>tf</depend>
   <depend>pcl_ros</depend>
-  <depend condition="$ROS_VERSION == 1">livox_ros_driver</depend>
-  <depend condition="$ROS_VERSION == 2">livox_ros_driver2</depend>
+  <depend>livox_ros_driver2</depend>
   <build_depend condition="$ROS_VERSION == 1">message_generation</build_depend>
   <exec_depend condition="$ROS_VERSION == 1">message_runtime</exec_depend>
 

@@ -8,7 +8,7 @@
  */
 #ifdef USE_ROS1
 #include <geometry_msgs/Vector3.h>
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <ros/ros.h>
@@ -17,10 +17,10 @@
 #include <tf/transform_datatypes.h>
 #include <visualization_msgs/Marker.h>
 #else
-#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include <nav_msgs/msg/odometry.hpp>
@@ -277,7 +277,7 @@ void standard_pcl_cbk(sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
 
 double timediff_lidar_wrt_imu = 0.0;
 #ifdef USE_ROS1
-void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr& msg) {
+void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr& msg) {
 #else
 void livox_pcl_cbk(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg) {
 #endif
@@ -743,8 +743,7 @@ void publish_odometry(
         odomAftMapped.pose.pose.position.y;
     transform_stamped.transform.translation.z =
         odomAftMapped.pose.pose.position.z;
-    transform_stamped.transform.rotation =
-        odomAftMapped.pose.pose.orientation;
+    transform_stamped.transform.rotation = odomAftMapped.pose.pose.orientation;
     tf_broadcaster->sendTransform(transform_stamped);
   }
 #endif

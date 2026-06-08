@@ -2,7 +2,7 @@
 #define PREPROCESS_H
 
 #ifdef USE_ROS1
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #else
@@ -99,7 +99,7 @@ class Preprocess
   ~Preprocess();
 
 #ifdef USE_ROS1
-  void process(const livox_ros_driver::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
+  void process(const livox_ros_driver2::CustomMsg::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
   void process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointCloudXYZI::Ptr &pcl_out);
 #else
   void process(const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr &msg, PointCloudXYZI::Ptr &pcl_out);
@@ -124,7 +124,7 @@ class Preprocess
 
   private:
 #ifdef USE_ROS1
-  void avia_handler(const livox_ros_driver::CustomMsg::ConstPtr &msg);
+  void avia_handler(const livox_ros_driver2::CustomMsg::ConstPtr &msg);
   void oust64_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
   void velodyne_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
   void sim_handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
