@@ -34,11 +34,14 @@
 
 #include <condition_variable>
 #include <csignal>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 
 #include "IMU_Processing.hpp"
 #include "common_lib.h"
 #include "ikd-Tree/ikd_Tree.h"
+#include "metric_monitor.hpp"
 #include "preprocess.h"
 #include "use-ikfom.hpp"
 #include "yaml_loader.hpp"
@@ -185,6 +188,39 @@ bool gravity_align_initialized = false;
 
 std::string world_frame_id = "map";
 
+std::unique_ptr<metric_monitor::MetricMonitor> metric_monitor_ptr;
+std::uint64_t lidar_metric_seq = 0;
+std::uint64_t imu_metric_seq = 0;
+
+#ifdef USE_ROS1
+inline double stamp_to_sec(const ros::Time& stamp) { return stamp.toSec(); }
+#else
+inline double stamp_to_sec(const builtin_interfaces::msg::Time& stamp) {
+  return rclcpp::Time(stamp).seconds();
+}
+#endif
+
+template <typename HeaderT>
+inline void record_subscribe_header_metric(const std::string& name,
+                                           const HeaderT& header,
+                                           std::uint64_t& fallback_seq) {
+  if (!metric_monitor_ptr) {
+    return;
+  }
+#ifdef USE_ROS1
+  const std::uint64_t sequence = header.seq;
+#else
+  const std::uint64_t sequence = fallback_seq++;
+#endif
+  metric_monitor_ptr->recordHeader(name, sequence, stamp_to_sec(header.stamp));
+}
+
+inline void record_fastlio_time_cost_metric(double duration_sec) {
+  if (metric_monitor_ptr) {
+    metric_monitor_ptr->recordCost("fastlio_time_cost_sec", duration_sec);
+  }
+}
+
 inline void ConvertPoseToGravFrame(V3D& pos, Quaterniond& q) {
   M3D rot = q.toRotationMatrix();
   pos = G_T_I0.block<3, 3>(0, 0) * pos + G_T_I0.col(3).head(3);
@@ -244,6 +280,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr& msg) {
 // first received sample during rclcpp/Fast DDS subscription dispatch.
 void standard_pcl_cbk(sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
 #endif
+  record_subscribe_header_metric("lidar", msg->header, lidar_metric_seq);
   mtx_buffer.lock();
   scan_count++;
   double preprocess_start_time = omp_get_wtime();
@@ -281,6 +318,7 @@ void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr& msg) {
 #else
 void livox_pcl_cbk(livox_ros_driver2::msg::CustomMsg::ConstSharedPtr msg) {
 #endif
+  record_subscribe_header_metric("lidar", msg->header, lidar_metric_seq);
   static bool timediff_set_flg = false;
   mtx_buffer.lock();
   double preprocess_start_time = omp_get_wtime();
@@ -334,6 +372,7 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr& msg_in) {
 #else
 void imu_cbk(sensor_msgs::msg::Imu::ConstSharedPtr msg_in) {
 #endif
+  record_subscribe_header_metric("imu", msg_in->header, imu_metric_seq);
   publish_count++;
   // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
 #ifdef USE_ROS1
@@ -1068,6 +1107,23 @@ int main(int argc, char** argv) {
   else
     cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
 
+  metric_monitor::MetricMonitorConfig metric_config;
+  metric_config.module_name = "fastlio";
+  metric_config.log_directory = root_dir + "/Log/metric_monitor";
+  metric_config.snapshot_directory = "/tmp";
+  metric_config.process_interval_sec = 0.02;
+  metric_config.metrics_csv_write_interval_sec = 0.5;
+  metric_config.tmp_snapshot_write_interval_sec = 0.5;
+  metric_config.statistics_window_sec = 2.0;
+  metric_config.no_data_timeout_sec = 5.0;
+  metric_config.data_lost_timeout_sec = 0.2;
+  metric_monitor_ptr =
+      std::make_unique<metric_monitor::MetricMonitor>(metric_config);
+  metric_monitor_ptr->registerHeaderMetric("lidar", 0.05, 0.1, 9.0, 8.0);
+  metric_monitor_ptr->registerHeaderMetric("imu", 0.02, 0.05, 100.0, 80.0);
+  metric_monitor_ptr->registerCostMetric("fastlio_time_cost_sec", 0.03, 0.06);
+  metric_monitor_ptr->start();
+
   /*** ROS subscribe initialization ***/
 #ifdef USE_ROS1
   ros::Subscriber sub_pcl =
@@ -1091,13 +1147,14 @@ int main(int argc, char** argv) {
   rclcpp::SubscriptionBase::SharedPtr sub_pcl;
   if (p_pre->lidar_type == AVIA) {
     sub_pcl = nh->create_subscription<livox_ros_driver2::msg::CustomMsg>(
-        lid_topic, rclcpp::SensorDataQoS(), livox_pcl_cbk);
+        lid_topic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(), livox_pcl_cbk);
   } else {
     sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(
-        lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
+        lid_topic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
+        standard_pcl_cbk);
   }
   auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(
-      imu_topic, rclcpp::SensorDataQoS(), imu_cbk);
+      imu_topic, rclcpp::QoS(rclcpp::KeepLast(100)).reliable(), imu_cbk);
   auto pubLaserCloudFull = nh->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/cloud_registered", 100000);
   auto pubLaserCloudFull_body =
@@ -1267,6 +1324,7 @@ int main(int argc, char** argv) {
       /******* Publish points *******/
       if (path_en) publish_path(pubPath);
       if (scan_pub_en || pcd_save_en) publish_frame_world(pubLaserCloudFull);
+      record_fastlio_time_cost_metric(omp_get_wtime() - t0);
       if (scan_pub_en && scan_body_pub_en)
         publish_frame_body(pubLaserCloudFull_body);
       // publish_effect_world(pubLaserCloudEffect);
@@ -1341,6 +1399,9 @@ int main(int argc, char** argv) {
 
   fout_out.close();
   fout_pre.close();
+  if (metric_monitor_ptr) {
+    metric_monitor_ptr->stop();
+  }
 
   if (runtime_pos_log) {
     vector<double> t, s_vec, s_vec2, s_vec3, s_vec4, s_vec5, s_vec6, s_vec7;
