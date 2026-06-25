@@ -349,6 +349,8 @@ bool sync_packages(MeasureGroup& meas) {
       lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
     } else {
       scan_num++;
+      // FAST-LIO stores each point's relative scan time in the PCL
+      // curvature field (milliseconds), not geometric curvature.
       lidar_end_time = meas.lidar_beg_time +
                        meas.lidar->points.back().curvature / double(1000);
       lidar_mean_scantime +=

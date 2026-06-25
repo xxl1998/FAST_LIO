@@ -87,6 +87,10 @@ void Preprocess::process(
       sim_handler(msg);
       break;
 
+    case ROBOSENSE:
+      robosense_handler(msg);
+      break;
+
     default:
       printf("Error LiDAR Type");
       break;
@@ -351,6 +355,9 @@ void Preprocess::velodyne_handler(
       added_pt.y = pl_orig.points[i].y;
       added_pt.z = pl_orig.points[i].z;
       added_pt.intensity = pl_orig.points[i].intensity;
+      // Reuse curvature to carry per-point offset time in milliseconds for
+      // deskewing and scan end-time estimation. It must be relative to the
+      // cloud stamp, not an absolute timestamp.
       added_pt.curvature =
           pl_orig.points[i].time * time_unit_scale;  // units: ms
 
@@ -413,6 +420,9 @@ void Preprocess::velodyne_handler(
       added_pt.y = pl_orig.points[i].y;
       added_pt.z = pl_orig.points[i].z;
       added_pt.intensity = pl_orig.points[i].intensity;
+      // Reuse curvature to carry per-point offset time in milliseconds for
+      // deskewing and scan end-time estimation. It must be relative to the
+      // cloud stamp, not an absolute timestamp.
       added_pt.curvature = pl_orig.points[i].time *
                            time_unit_scale;  // curvature unit: ms //
                                              // cout<<added_pt.curvature<<endl;
@@ -483,6 +493,44 @@ void Preprocess::sim_handler(
     added_pt.normal_y = 0;
     added_pt.normal_z = 0;
     added_pt.curvature = 0.0;
+    pl_surf.points.push_back(added_pt);
+  }
+}
+#ifdef USE_ROS1
+void Preprocess::robosense_handler(
+    const sensor_msgs::PointCloud2::ConstPtr& msg)
+#else
+void Preprocess::robosense_handler(
+    const sensor_msgs::msg::PointCloud2::ConstPtr& msg)
+#endif
+{
+  pl_surf.clear();
+  pl_full.clear();
+  pcl::PointCloud<robosense_ros::Point> pl_orig;
+  pcl::fromROSMsg(*msg, pl_orig);
+  int plsize = pl_orig.size();
+  pl_surf.reserve(plsize);
+#ifdef USE_ROS1
+  double start_time = msg->header.stamp.toSec();
+#else
+  double start_time = rclcpp::Time(msg->header.stamp).seconds();
+#endif
+  for (int i = 0; i < pl_orig.points.size(); i++) {
+    double range = pl_orig.points[i].x * pl_orig.points[i].x +
+                   pl_orig.points[i].y * pl_orig.points[i].y +
+                   pl_orig.points[i].z * pl_orig.points[i].z;
+    if (range < blind * blind) continue;
+    Eigen::Vector3d pt_vec;
+    PointType added_pt;
+    added_pt.x = pl_orig.points[i].x;
+    added_pt.y = pl_orig.points[i].y;
+    added_pt.z = pl_orig.points[i].z;
+    added_pt.intensity = pl_orig.points[i].intensity;
+    added_pt.normal_x = 0;
+    added_pt.normal_y = 0;
+    added_pt.normal_z = 0;
+    added_pt.curvature = (pl_orig.points[i].timestamp - start_time) *
+                         time_unit_scale;  // curvature unit: ms ;
     pl_surf.points.push_back(added_pt);
   }
 }

@@ -881,7 +881,7 @@ struct FastlioParameters {
 
   struct ImuPropagateConfig {
     bool enable = false;
-    bool use_imu_attitude = true;
+    bool use_imu_attitude = false;
     std::string topic = "/imu_propagate";
   } imu_propagate;
 
