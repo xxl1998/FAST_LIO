@@ -32,11 +32,15 @@
 #include <omp.h>
 #include <pcl/filters/voxel_grid.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <cstdint>
+#include <ctime>
+#include <iomanip>
 #include <memory>
 #include <mutex>
+#include <sstream>
 
 #include "IMU_Processing.hpp"
 #include "common_lib.h"
@@ -197,6 +201,52 @@ inline double stamp_to_sec(const ros::Time& stamp) { return stamp.toSec(); }
 #else
 inline double stamp_to_sec(const builtin_interfaces::msg::Time& stamp) {
   return rclcpp::Time(stamp).seconds();
+}
+
+inline std::string system_timestamp_string() {
+  const auto now = std::chrono::system_clock::now();
+  const auto now_time = std::chrono::system_clock::to_time_t(now);
+  const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now.time_since_epoch()) %
+                      1000;
+
+  std::tm local_time{};
+  localtime_r(&now_time, &local_time);
+
+  std::ostringstream oss;
+  oss << std::put_time(&local_time, "%Y-%m-%d %H:%M:%S") << "."
+      << std::setfill('0') << std::setw(3) << millis.count();
+  return oss.str();
+}
+
+inline const char* reliability_policy_to_string(
+    rmw_qos_reliability_policy_t reliability) {
+  switch (reliability) {
+    case RMW_QOS_POLICY_RELIABILITY_RELIABLE:
+      return "reliable";
+    case RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT:
+      return "best_effort";
+    case RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT:
+      return "system_default";
+    case RMW_QOS_POLICY_RELIABILITY_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+inline const char* durability_policy_to_string(
+    rmw_qos_durability_policy_t durability) {
+  switch (durability) {
+    case RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL:
+      return "transient_local";
+    case RMW_QOS_POLICY_DURABILITY_VOLATILE:
+      return "volatile";
+    case RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT:
+      return "system_default";
+    case RMW_QOS_POLICY_DURABILITY_UNKNOWN:
+    default:
+      return "unknown";
+  }
 }
 #endif
 
@@ -1119,7 +1169,8 @@ int main(int argc, char** argv) {
   metric_config.data_lost_timeout_sec = 0.2;
   metric_monitor_ptr =
       std::make_unique<metric_monitor::MetricMonitor>(metric_config);
-  metric_monitor_ptr->registerHeaderMetric("lidar", 0.05, 0.1, 9.0, 8.0);
+  // LiDAR header time is start time of a frame, so ideal latency is 0.1 second.
+  metric_monitor_ptr->registerHeaderMetric("lidar", 0.15, 0.2, 9.0, 8.0);
   metric_monitor_ptr->registerHeaderMetric("imu", 0.02, 0.05, 100.0, 80.0);
   metric_monitor_ptr->registerCostMetric("fastlio_time_cost_sec", 0.03, 0.06);
   metric_monitor_ptr->start();
@@ -1153,8 +1204,75 @@ int main(int argc, char** argv) {
         lid_topic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
         standard_pcl_cbk);
   }
+
+  const int imu_qos_detect_retries = 5;
+  const double imu_qos_detect_retry_period_sec = 0.5;
+  const auto imu_qos_retry_period =
+      std::chrono::duration<double>(imu_qos_detect_retry_period_sec);
+  auto imu_publishers = nh->get_publishers_info_by_topic(imu_topic);
+  for (int retry = 0;
+       retry < imu_qos_detect_retries && imu_publishers.empty() && rclcpp::ok();
+       ++retry) {
+    std::cout << "[" << system_timestamp_string() << "] "
+              << "[fast_lio] IMU topic '" << imu_topic
+              << "' has no discovered publishers, waiting for graph updates "
+              << "(" << (retry + 1) << "/" << imu_qos_detect_retries
+              << ", timeout " << imu_qos_detect_retry_period_sec << "s)"
+              << std::endl;
+
+    const auto retry_deadline =
+        std::chrono::steady_clock::now() + imu_qos_retry_period;
+    do {
+      auto graph_event = nh->get_graph_event();
+      const auto remaining =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              retry_deadline - std::chrono::steady_clock::now());
+      if (remaining <= std::chrono::nanoseconds::zero()) {
+        break;
+      }
+      nh->wait_for_graph_change(graph_event, remaining);
+      imu_publishers = nh->get_publishers_info_by_topic(imu_topic);
+    } while (imu_publishers.empty() && rclcpp::ok() &&
+             std::chrono::steady_clock::now() < retry_deadline);
+  }
+
+  bool use_reliable_imu_qos = !imu_publishers.empty();
+
+  std::cout << "[fast_lio] IMU topic '" << imu_topic
+            << "' publisher count: " << imu_publishers.size() << std::endl;
+  for (size_t i = 0; i < imu_publishers.size(); ++i) {
+    const auto& publisher_info = imu_publishers[i];
+    const auto& qos_profile =
+        publisher_info.qos_profile().get_rmw_qos_profile();
+    const bool publisher_reliable =
+        qos_profile.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE;
+    use_reliable_imu_qos = use_reliable_imu_qos && publisher_reliable;
+
+    std::cout << "[fast_lio] IMU publisher[" << i << "] node='"
+              << publisher_info.node_namespace() << "/"
+              << publisher_info.node_name() << "' type='"
+              << publisher_info.topic_type() << "' reliability="
+              << reliability_policy_to_string(qos_profile.reliability)
+              << " durability="
+              << durability_policy_to_string(qos_profile.durability)
+              << " depth=" << qos_profile.depth << std::endl;
+  }
+
+  auto imu_sub_qos = rclcpp::QoS(rclcpp::KeepLast(100));
+  if (use_reliable_imu_qos) {
+    imu_sub_qos.reliable();
+  } else {
+    imu_sub_qos.best_effort();
+  }
+  std::cout << "[fast_lio] Subscribe IMU topic '" << imu_topic
+            << "' with reliability="
+            << reliability_policy_to_string(
+                   imu_sub_qos.get_rmw_qos_profile().reliability)
+            << " depth=" << imu_sub_qos.get_rmw_qos_profile().depth
+            << std::endl;
+
   auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(
-      imu_topic, rclcpp::QoS(rclcpp::KeepLast(100)).reliable(), imu_cbk);
+      imu_topic, imu_sub_qos, imu_cbk);
   auto pubLaserCloudFull = nh->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/cloud_registered", 100000);
   auto pubLaserCloudFull_body =

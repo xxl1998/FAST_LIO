@@ -8,7 +8,9 @@
         name="link1_broadcaster"
         args="0 0 0 0 0 0 map camera_init"/> -->
 
-  <node pkg="fast_lio" exec="fastlio_mapping" name="laserMapping" output="screen">
+  <node pkg="fast_lio" exec="fastlio_mapping" name="laserMapping" output="screen"
+  emulate_tty="true"
+  >
     <param name="config_file" value="mid360.yaml"/>
     <param name="runtime_pos_log_enable" value="true"/>
     <remap from="/Odometry" to="/lidar_slam/odom"/>
