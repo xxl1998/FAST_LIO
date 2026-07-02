@@ -14,6 +14,7 @@
     <param name="config_file" value="mid360.yaml"/>
     <param name="runtime_pos_log_enable" value="true"/>
     <remap from="/Odometry" to="/lidar_slam/odom"/>
+    <remap from="/lidar_slam/pose" to="/mavros/vision_pose/pose"/>
   </node>
 
   <node if="$(var rviz)"

@@ -7,6 +7,7 @@
  * This file is a refactor of FASTLIO2
  */
 #ifdef USE_ROS1
+#include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Vector3.h>
 #include <livox_ros_driver2/CustomMsg.h>
 #include <nav_msgs/Odometry.h>
@@ -20,6 +21,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/transform_broadcaster.h>
 
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
@@ -839,6 +841,23 @@ void publish_odometry(
 }
 
 #ifdef USE_ROS1
+void publish_lidar_pose(const ros::Publisher& pubLidarPose)
+#else
+void publish_lidar_pose(
+    const rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr&
+        pubLidarPose)
+#endif
+{
+  msg_body_pose.header = odomAftMapped.header;
+  msg_body_pose.pose = odomAftMapped.pose.pose;
+#ifdef USE_ROS1
+  pubLidarPose.publish(msg_body_pose);
+#else
+  pubLidarPose->publish(msg_body_pose);
+#endif
+}
+
+#ifdef USE_ROS1
 void publish_path(const ros::Publisher pubPath) {
 #else
 void publish_path(
@@ -1192,6 +1211,8 @@ int main(int argc, char** argv) {
       nh.advertise<sensor_msgs::PointCloud2>("/Laser_map", 100000);
   ros::Publisher pubOdomAftMapped =
       nh.advertise<nav_msgs::Odometry>("/Odometry", 100000);
+  ros::Publisher pubLidarPose =
+      nh.advertise<geometry_msgs::PoseStamped>("/lidar_slam/pose", 100000);
   pubImuPropOdom = nh.advertise<nav_msgs::Odometry>(imu_prop_topic, 100000);
   ros::Publisher pubPath = nh.advertise<nav_msgs::Path>("/path", 100000);
 #else
@@ -1285,6 +1306,8 @@ int main(int argc, char** argv) {
       nh->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 100000);
   auto pubOdomAftMapped =
       nh->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 100000);
+  auto pubLidarPose = nh->create_publisher<geometry_msgs::msg::PoseStamped>(
+      "/lidar_slam/pose", 100000);
   pubImuPropOdom =
       nh->create_publisher<nav_msgs::msg::Odometry>(imu_prop_topic, 100000);
   auto pubPath = nh->create_publisher<nav_msgs::msg::Path>("/path", 100000);
@@ -1433,6 +1456,7 @@ int main(int argc, char** argv) {
 
       /******* Publish odometry *******/
       publish_odometry(pubOdomAftMapped);
+      publish_lidar_pose(pubLidarPose);
 
       /*** add the feature points to map kdtree ***/
       t3 = omp_get_wtime();
