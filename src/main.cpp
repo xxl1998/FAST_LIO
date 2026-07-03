@@ -67,8 +67,10 @@ bool sync_packages(MeasureGroup& meas);
 void map_incremental();
 void h_share_model(state_ikfom& s,
                    esekfom::dyn_share_datastruct<double>& ekfom_data);
+void publish_lidar_pose();
 
 #ifdef USE_ROS1
+ros::Publisher pubLidarPose;
 ros::Publisher pubImuPropOdom;
 
 nav_msgs::Path path;
@@ -77,6 +79,7 @@ nav_msgs::Odometry imuPropOdom;
 geometry_msgs::Quaternion geoQuat;
 geometry_msgs::PoseStamped msg_body_pose;
 #else
+rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pubLidarPose;
 rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubImuPropOdom;
 std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
 
@@ -553,6 +556,11 @@ void imu_cbk(sensor_msgs::msg::Imu::ConstSharedPtr msg_in) {
         }
       }
       publish_imu_propagate_odometry(*msg);
+      static uint64_t pub_cnt = 0;
+      if (pub_cnt % 5 == 0) {
+        publish_lidar_pose();
+      }
+      pub_cnt++;
     }
   }
 
@@ -841,15 +849,13 @@ void publish_odometry(
 }
 
 #ifdef USE_ROS1
-void publish_lidar_pose(const ros::Publisher& pubLidarPose)
+void publish_lidar_pose()
 #else
-void publish_lidar_pose(
-    const rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr&
-        pubLidarPose)
+void publish_lidar_pose()
 #endif
 {
-  msg_body_pose.header = odomAftMapped.header;
-  msg_body_pose.pose = odomAftMapped.pose.pose;
+  msg_body_pose.header = imuPropOdom.header;
+  msg_body_pose.pose = imuPropOdom.pose.pose;
 #ifdef USE_ROS1
   pubLidarPose.publish(msg_body_pose);
 #else
@@ -1211,7 +1217,7 @@ int main(int argc, char** argv) {
       nh.advertise<sensor_msgs::PointCloud2>("/Laser_map", 100000);
   ros::Publisher pubOdomAftMapped =
       nh.advertise<nav_msgs::Odometry>("/Odometry", 100000);
-  ros::Publisher pubLidarPose =
+  pubLidarPose =
       nh.advertise<geometry_msgs::PoseStamped>("/lidar_slam/pose", 100000);
   pubImuPropOdom = nh.advertise<nav_msgs::Odometry>(imu_prop_topic, 100000);
   ros::Publisher pubPath = nh.advertise<nav_msgs::Path>("/path", 100000);
@@ -1306,7 +1312,7 @@ int main(int argc, char** argv) {
       nh->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 100000);
   auto pubOdomAftMapped =
       nh->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 100000);
-  auto pubLidarPose = nh->create_publisher<geometry_msgs::msg::PoseStamped>(
+  pubLidarPose = nh->create_publisher<geometry_msgs::msg::PoseStamped>(
       "/lidar_slam/pose", 100000);
   pubImuPropOdom =
       nh->create_publisher<nav_msgs::msg::Odometry>(imu_prop_topic, 100000);
@@ -1456,7 +1462,6 @@ int main(int argc, char** argv) {
 
       /******* Publish odometry *******/
       publish_odometry(pubOdomAftMapped);
-      publish_lidar_pose(pubLidarPose);
 
       /*** add the feature points to map kdtree ***/
       t3 = omp_get_wtime();
