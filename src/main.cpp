@@ -207,6 +207,7 @@ inline double stamp_to_sec(const ros::Time& stamp) { return stamp.toSec(); }
 inline double stamp_to_sec(const builtin_interfaces::msg::Time& stamp) {
   return rclcpp::Time(stamp).seconds();
 }
+#endif
 
 inline std::string system_timestamp_string() {
   const auto now = std::chrono::system_clock::now();
@@ -224,6 +225,7 @@ inline std::string system_timestamp_string() {
   return oss.str();
 }
 
+#ifndef USE_ROS1
 inline const char* reliability_policy_to_string(
     rmw_qos_reliability_policy_t reliability) {
   switch (reliability) {
@@ -254,6 +256,13 @@ inline const char* durability_policy_to_string(
   }
 }
 #endif
+
+inline double latest_imu_buffer_stamp_sec() {
+  if (imu_buffer.empty()) {
+    return -1.0;
+  }
+  return stamp_to_sec(imu_buffer.back()->header.stamp);
+}
 
 template <typename HeaderT>
 inline void record_subscribe_header_metric(const std::string& name,
@@ -1506,12 +1515,33 @@ int main(int argc, char** argv) {
         s_plot9[time_log_counter] = aver_time_consu;
         s_plot10[time_log_counter] = add_point_size;
         time_log_counter++;
+        size_t unprocessed_imu_num = 0;
+        size_t unprocessed_lidar_num = 0;
+        double latest_imu_header_time = -1.0;
+        double latest_lidar_header_time = -1.0;
+        {
+          lock_guard<mutex> lk_buffer(mtx_buffer);
+          unprocessed_imu_num = imu_buffer.size();
+          unprocessed_lidar_num = lidar_buffer.size();
+          latest_imu_header_time = latest_imu_buffer_stamp_sec();
+          if (!time_buffer.empty()) {
+            latest_lidar_header_time = time_buffer.back();
+          }
+        }
+        const std::string runtime_log_stamp = system_timestamp_string();
         printf(
-            "[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: "
+            "[%s]: time: IMU + Map + Input Downsample: %0.6f ave match: "
             "%0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave "
             "total: %0.6f icp: %0.6f construct H: %0.6f \n",
+            runtime_log_stamp.c_str(),  //
             t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3,
             aver_time_consu, aver_time_icp, aver_time_const_H_time);
+        printf(
+            "[%s]: unprocessed imu num: %zu latest imu header time: %.9f "
+            "unprocessed lidar num: %zu latest lidar header time: %.9f\n",
+            runtime_log_stamp.c_str(), unprocessed_imu_num,
+            latest_imu_header_time, unprocessed_lidar_num,
+            latest_lidar_header_time);
         ext_euler = SO3ToEuler(state_point.offset_R_L_I);
         fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time
                  << " " << euler_cur.transpose() << " "
