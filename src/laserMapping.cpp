@@ -50,8 +50,10 @@
 #include <unistd.h>
 
 #include <Eigen/Core>
+#include <atomic>
 #include <csignal>
 #include <fstream>
+#include <mutex>
 #include <thread>
 
 #include "IMU_Processing.hpp"
@@ -71,7 +73,8 @@ float DET_RANGE = 300.0f;
 const float MOV_THRESHOLD = 1.5f;
 
 double res_mean_last = 0.05, total_residual = 0.0;
-extern double last_timestamp_imu;
+extern std::atomic<double> last_timestamp_imu;
+extern std::mutex mtx_buffer;
 extern double filter_size_map_min;
 double cube_len = 0;
 double lidar_end_time = 0, first_lidar_time = 0.0;
@@ -329,6 +332,7 @@ void lasermap_fov_segment() {
 }
 
 bool sync_packages(MeasureGroup& meas) {
+  std::lock_guard<std::mutex> lock(mtx_buffer);
   static double lidar_mean_scantime = 0.0;
   static int scan_num = 0;
   if (lidar_buffer.empty() || imu_buffer.empty()) {
@@ -365,7 +369,7 @@ bool sync_packages(MeasureGroup& meas) {
     lidar_pushed = true;
   }
 
-  if (last_timestamp_imu < lidar_end_time) {
+  if (last_timestamp_imu.load(std::memory_order_relaxed) < lidar_end_time) {
     return false;
   }
 
