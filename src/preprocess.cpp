@@ -105,6 +105,8 @@ void Preprocess::avia_handler(
 void Preprocess::avia_handler(
     const livox_ros_driver2::msg::CustomMsg::ConstSharedPtr& msg) {
 #endif
+  // livox_ros_driver2/CustomMsg timebase: uint64, unit: ns
+  // livox_ros_driver2/CustomMsg offset_time: uint32, unit: ns
   pl_surf.clear();
   pl_corn.clear();
   pl_full.clear();

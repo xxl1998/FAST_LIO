@@ -94,6 +94,7 @@ rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
 rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped;
 rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath;
 std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
+rclcpp::Clock::SharedPtr ros_clock;
 
 nav_msgs::msg::Path path;
 nav_msgs::msg::Odometry odomAftMapped;
@@ -819,11 +820,28 @@ void publish_odometry(
 #endif
   odomAftMapped.header.frame_id = world_frame_id;
   odomAftMapped.child_frame_id = "body";
+  // origin version, the time is latest sensor time used in state update
+  // double odom_time = lidar_end_time;
+  // this is a trick to reduce odometry latency
 #ifdef USE_ROS1
-  odomAftMapped.header.stamp = ros::Time().fromSec(
-      lidar_end_time);  // ros::Time().fromSec(lidar_end_time);
+  const double current_time = ros::Time::now().toSec();
 #else
-  odomAftMapped.header.stamp = rclcpp::Time((int64_t)(lidar_end_time * 1e9));
+  const double current_time = ros_clock->now().seconds();
+#endif
+  double odom_time = last_timestamp_imu.load(std::memory_order_relaxed);
+  if (current_time > odom_time) {
+    if (current_time - odom_time <= 0.001) {
+      odom_time = current_time;
+    } else {
+      odom_time += 0.001;
+    }
+  } else {
+    // odom_time use latest IMU time
+  }
+#ifdef USE_ROS1
+  odomAftMapped.header.stamp = ros::Time().fromSec(odom_time);
+#else
+  odomAftMapped.header.stamp = rclcpp::Time((int64_t)(odom_time * 1e9));
 #endif
   set_posestamp(odomAftMapped.pose);
   V3D vel = state_point.vel;
@@ -1338,6 +1356,7 @@ int main(int argc, char** argv) {
 #else
   rclcpp::init(argc, argv);
   auto nh = rclcpp::Node::make_shared("laserMapping");
+  ros_clock = nh->get_clock();
   tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
 #endif
 
