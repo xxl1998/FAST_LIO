@@ -1640,8 +1640,9 @@ int main(int argc, char** argv) {
     string file_name = string("scans.pcd");
     string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
     pcl::PCDWriter pcd_writer;
-    cout << "current scan saved to /PCD/" << file_name << endl;
+    cout << "save point cloud now..." << endl;
     pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+    cout << "point cloud saved to ./PCD/" << file_name << endl;
   }
 
   fout_out.close();
